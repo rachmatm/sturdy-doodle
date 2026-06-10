@@ -8,20 +8,20 @@ failure states) are correct before the wizard UI is built on top.
 
 ## Current Task
 
-**Seq 11 — `GET /api/images/[filename]`** · Area: Backend · Priority: P0 · Status: To Do
+**Seq 12 — `POST /api/refine` (re-generate from a saved concept)** · Area: Backend · Priority: P1 · Status: To Do
 
-Serve stored image bytes via `storage.readImage` (safe-filename + traversal
-guard): 200 with correct `Content-Type` + cache headers, 404 when absent, 400
-on an invalid filename. Dynamic param via Next 16 `RouteContext`/awaited
-`params`. Per `docs/architecture.md` §8.
+Load a saved concept, fold a refinement directive/change into its prompt
+(`buildRefinePrompt`), regenerate new variations, and save them alongside the
+original (`refinedFrom` set). Reuses the generate pipeline's store + record
+steps. Per `docs/architecture.md` §4.
 
 ## Next Task
 
-**Seq 13 — `GET /api/gallery` (paginated, persisted)** · Area: Backend · Priority: P0
+**Seq 14 — `GET /api/download` (PNG)** · Area: Backend · Priority: P1
 
-Serve the persisted gallery (every saved concept, newest first) so the frontend
-can hydrate on load and survive refresh — the persistence non-negotiable.
-Re-generation (`Seq 12 — POST /api/refine`) follows once persistence is proven.
+Export a saved logo as a downloadable PNG (`Content-Disposition: attachment`).
+After that, frontend work begins with **Seq 20 — persistent gallery view +
+hydrate on load**, which consumes the now-working `GET /api/gallery`.
 
 ## Done This Sprint
 
@@ -69,7 +69,19 @@ Re-generation (`Seq 12 — POST /api/refine`) follows once persistence is proven
   lint + build + live curl (INVALID_REQUEST / INVALID_PROMPT / UPSTREAM_ERROR
   paths). Happy path pending real `MISTRAL_API_KEY`.
 
-### Milestone: backend/AI lib layer (Seq 1–8) complete — routes underway.
+- **Seq 11 — `GET /api/images/[filename]`** ✅ 2026-06-11
+  Serve stored bytes via `storage.readImage` (safe-filename + traversal guard):
+  correct `Content-Type` + cache headers, 404 absent, 400 invalid filename.
+  lint + build clean.
+- **Seq 13 — `GET /api/gallery` (paginated, persisted)** ✅ 2026-06-11
+  `concepts`/`total`/`nextOffset` response from `listConcepts`/`countConcepts`,
+  newest-first; `limit` (default 24, max 100) + `offset` query params; malformed
+  params → `INVALID_REQUEST` (400); `force-dynamic` so it always reflects the DB.
+  Verified live: empty-state, pagination + `nextOffset` cursor, newest-first
+  ordering (seeded temp DB), and the 400 validation path. lint + tsc clean.
+
+### Milestone: persistence path provable end-to-end — generate → store → gallery.
+Next: re-generation (`/api/refine`) and download, then the wizard UI.
 
 ## Blockers
 

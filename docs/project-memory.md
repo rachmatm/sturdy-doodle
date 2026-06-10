@@ -49,6 +49,7 @@ Single Next.js 16 fullstack app. Wizard (React 19) → same-origin API routes �
 | --- | --- | --- |
 | 2026-06-11 | Realigned all `docs/` + Notion brief/board to the assessment | Match Actual Inc. deliverables while keeping the existing logo concept |
 | 2026-06-11 | Save every concept to the gallery | Persistence non-negotiable (image + prompt across refresh) |
+| 2026-06-11 | `GET /api/gallery` returns `{concepts,total,nextOffset}`, `force-dynamic`, `limit`≤100 | Offset pagination + always-fresh reads; built on `feat/api-gallery` branch |
 
 ## Known issues / risks
 

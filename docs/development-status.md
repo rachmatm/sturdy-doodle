@@ -13,12 +13,13 @@ _Last updated: 2026-06-11_
 | Layer | Status |
 | --- | --- |
 | Backend libs (`lib/*`) | ✅ Complete |
-| API routes | 🟡 Partial (3 of 6) |
+| API routes | 🟡 Partial (4 of 6) |
 | Frontend (wizard + gallery) | ⬜ Not started |
 | QA (concurrency, security, tests) | ⬜ Not started |
 | Deploy / live URL | ⬜ Not started |
 
-Overall: **backend/AI library layer done; API routes underway; no UI yet.**
+Overall: **backend/AI library layer done; persistence path (generate → store →
+gallery) provable; `refine`/`download` routes and UI still to do.**
 
 ---
 
@@ -38,13 +39,14 @@ Overall: **backend/AI library layer done; API routes underway; no UI yet.**
 - `GET /api/health` — liveness + `aiKeyConfigured`.
 - `POST /api/generate` — full pipeline (validate → generate → store → record), partial-success tolerant.
 - `GET /api/images/[filename]` — serve stored bytes safely.
+- `GET /api/gallery` — paginated persisted listing (`concepts`/`total`/`nextOffset`), newest-first, `force-dynamic`. **Verified live** (empty-state, pagination cursor, ordering, 400 on bad params).
 
 ---
 
 ## In progress / next (🟡)
 
-- `GET /api/gallery` (paginated, persisted) — **next**, P0. Needed for gallery persistence.
-- `POST /api/refine` (re-generate from a saved concept) — P1.
+- `POST /api/refine` (re-generate from a saved concept) — **next**, P1.
+- `GET /api/download` (PNG) — P1.
 
 ---
 
@@ -59,14 +61,15 @@ Overall: **backend/AI library layer done; API routes underway; no UI yet.**
 
 ## Verified
 
-- `lint` + `build` clean across the library layer and the three routes.
+- `lint` + `tsc` clean across the library layer and the four routes.
 - Error paths on `/api/generate` exercised via `curl` (`INVALID_REQUEST`, `INVALID_PROMPT`, `UPSTREAM_ERROR`).
 - Storage traversal rejections smoke-tested.
+- `/api/gallery` exercised live: empty-state, pagination + `nextOffset` cursor, newest-first ordering (seeded temp DB), and `INVALID_REQUEST` on malformed params.
 
 ## Not yet verified
 
 - Happy-path generation against a real `MISTRAL_API_KEY` (live image bytes).
-- Gallery persistence across refresh end-to-end (needs `/api/gallery` + UI).
+- Gallery persistence across refresh **in the browser** (route proven; UI not built).
 - Concurrency under real simultaneous load.
 
 ---
