@@ -72,6 +72,7 @@ in-browser QA + README + deploy (needs a real key).**
 
 ## Verified
 
+- **Happy path against a real `MISTRAL_API_KEY` (2026-06-11, `npm run dev`):** `/api/health` → `aiKeyConfigured:true`; `POST /api/generate` (full brief) → 200 with real **1024×768 JPEG** logos saved to disk (75–115 KB each), each carrying its prompt with an inferred palette (TC-001/002); `/api/images/<id>.jpg` serves valid JPEG bytes; `/api/gallery` reflects them (`total:4`) and they persist across re-reads (TC-003); `/api/download?id=` returns `Content-Disposition: attachment`, a slugged filename, and valid JPEG bytes (FR-8). **Refine happy path (TC-004) NOT yet confirmed** — every refine attempt hit the provider's free-tier image rate limit (`429 image_generation rate limit reached`) and correctly returned `UPSTREAM_ERROR` 502 with the gallery left intact (nothing partial saved — TC-009 verified live). Two findings: (a) generate fans out **12** image calls and the free tier rate-limits hard — only ~4 succeeded; partial-success tolerance is what kept it green; consider lowering the fan-out to fit the free tier. (b) the model returns **JPEG, not PNG** — download labels the file `.jpg` honestly via magic bytes (not faked), so the "Download as PNG" wording in the PRD/README is inaccurate; it is "download the raster as generated."
 - `lint` + `tsc` + `build` clean across the library layer, all six routes, and the full frontend (studio host, gallery, wizard + steps, generating card, error banner, logo card select/download). _One earlier build hit a transient Google-Fonts fetch failure (`next/font/google`, network); a retry passed clean._
 - Error paths on `/api/generate` exercised via `curl` (`INVALID_REQUEST`, `INVALID_PROMPT`, `UPSTREAM_ERROR`).
 - Storage traversal rejections smoke-tested.
@@ -85,7 +86,7 @@ in-browser QA + README + deploy (needs a real key).**
 
 ## Not yet verified
 
-- Happy-path generation **and refinement** against a real `MISTRAL_API_KEY` (live image bytes).
+- Happy-path **refinement** (TC-004) against a real key — blocked so far by the provider's free-tier image rate limit (`429`); generate happy-path is now verified (see above), and refine reuses the same `generateImage` path, so this is a quota wait, not a code gap. Retry once the image quota resets (hourly/daily window).
 - Gallery render + persistence across refresh **in a real browser** (server shell + every API the client consumes are proven; the hydrated React grid has not been visually confirmed — no headless browser in this environment; check with `npm run dev`).
 - Full loop **interactively** (lint/tsc/build pass and the UI is mounted via `LogoStudio`; step navigation, trait cap, inline validation, the generating spinner, prepend-on-success, `ErrorBanner` retry/dismiss, card select-ring / download click, and the refine toolbar have not been exercised in a browser — no headless browser here; check with `npm run dev`).
 - **Responsiveness visually** — the layout is responsive by construction and the mobile-pass class tweaks build clean, but small-screen rendering has not been eyeballed; verify at mobile/desktop widths with `npm run dev`.
