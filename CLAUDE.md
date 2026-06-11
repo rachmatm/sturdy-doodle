@@ -76,6 +76,9 @@ Then determine task type, and read the docs for that type:
   - docs/project-memory.md
 - **Testing:**
   - docs/test-plan.md
+- **Notion / kanban sync** (when asked to "sync Notion" or "sync the board"):
+  - docs/notion-sync.md — use this file ONLY (plus current-sprint.md and
+    development-status.md for status). Do NOT read application source code.
 
 If documentation conflicts with source code, raise the discrepancy before
 proceeding.
