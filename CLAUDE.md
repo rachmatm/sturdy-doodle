@@ -4,14 +4,8 @@
 
 This project is an AI Logo Generator MVP.
 
-Before starting any work, read:
-
-- docs/product-requirements.md
-- docs/acceptance-criteria.md
-- docs/test-plan.md
-- docs/project-memory.md
-- docs/current-sprint.md
-- docs/development-status.md
+Before starting any work, follow the **Startup Procedure** below to load the
+right context for the task at hand.
 
 ---
 
@@ -32,6 +26,7 @@ At the end of every meaningful task:
 - Update docs/project-memory.md
 - Update docs/current-sprint.md
 - Update docs/development-status.md
+- Append any implementation decisions to docs/decision-log.md
 
 ---
 
@@ -62,32 +57,31 @@ Provide a summary of:
 
 ---
 
-# Session Startup Rules
+# Startup Procedure
 
-Before making any changes:
+Before any implementation:
 
-1. Read:
-   - docs/project-memory.md
-   - docs/current-sprint.md
-   - docs/development-status.md
-   - docs/product-requirements.md
-   - docs/acceptance-criteria.md
+Read:
 
-2. Build an understanding of:
-   - Project goals
-   - Current sprint goal
-   - Completed work
-   - Outstanding work
-   - Known issues
+1. docs/current-sprint.md
+2. docs/development-status.md
 
-3. Present a brief summary:
-   - Current state
-   - Current task
-   - Recommended next task
+Then determine task type, and read the docs for that type:
 
-4. Confirm that planned work aligns with:
-   - Product requirements
-   - Acceptance criteria
-   - Current sprint goals
+- **Feature implementation:**
+  - docs/product-requirements.md
+  - docs/acceptance-criteria.md
+- **Architecture changes:**
+  - docs/architecture.md
+  - docs/project-memory.md
+- **Testing:**
+  - docs/test-plan.md
+- **Notion / kanban sync** (when asked to "sync Notion" or "sync the board"):
+  - docs/notion-sync.md — use this file ONLY (plus current-sprint.md and
+    development-status.md for status). Do NOT read application source code.
 
-Do not begin implementation until project context has been reviewed.
+If documentation conflicts with source code, raise the discrepancy before
+proceeding.
+
+Then present a brief summary (current state, current task, recommended next
+task), and do not begin implementation until project context has been reviewed.
