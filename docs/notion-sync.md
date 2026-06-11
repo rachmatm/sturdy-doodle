@@ -41,12 +41,15 @@ IDs (the map below already has them).
    - built but only manually checked, no automated suite / awaiting a pass →
      `Review`
    - not started or in-flight → `To Do` / `In Progress`
-3. `notion-fetch` the card page by ID **only if** you need to confirm its
-   current value; otherwise update straight to the target. Prefer updating just
-   the deltas vs. the "Last-synced Status" column here.
-4. Update with `notion-update-page` (`command: update_properties`), setting
-   `Status` and appending a short `DONE <date>: …` (or status note) to `Notes`.
-   Batch independent updates in parallel.
+3. **Write-only — do NOT `notion-fetch` cards to confirm.** Trust the
+   "Last-synced Status" column below as the baseline: compare it to the true
+   status from step 2 and act only on the **deltas**. Update straight to target;
+   only `notion-fetch` a single card if its write actually fails (e.g. the ID is
+   stale). This keeps a sync to a handful of writes instead of ~30 reads.
+4. Update each changed card with `notion-update-page`
+   (`command: update_properties`), setting `Status` and appending a short
+   `DONE <date>: …` (or status note) to `Notes`. Batch independent updates in
+   parallel.
 5. If a doc tracks a task with no card (e.g. a new sprint task), create it with
    `notion-create-pages` under the data source ID, then add a row below.
 6. After syncing, **update the "Last-synced Status" column and the date** in
