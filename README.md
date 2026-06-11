@@ -97,21 +97,40 @@ own backend.
 | --- | --- |
 | `GET /api/health` | Liveness + whether the AI key is configured. |
 | `POST /api/generate` | Validate a brief → generate concepts → store + record → return them. |
-| `GET /api/gallery` | The persisted gallery (newest first). _(in progress)_ |
-| `POST /api/refine` | Re-generate from a saved concept with a prompt tweak. _(in progress)_ |
+| `GET /api/gallery` | The persisted gallery (newest first), paginated. |
+| `POST /api/refine` | Re-generate from a saved concept with a prompt tweak. |
 | `GET /api/images/[filename]` | Serve stored image bytes safely. |
-| `GET /api/download` | Export a logo as PNG. _(in progress)_ |
+| `GET /api/download` | Export a saved logo as a PNG download. |
 
 Errors use a uniform `{ error, code }` shape. Codes: `INVALID_REQUEST`,
 `INVALID_PROMPT`, `TIMEOUT`, `NO_IMAGE`, `UPSTREAM_ERROR`, `INTERNAL`.
 
 ---
 
+## Using the app
+
+1. **Describe your business** in the wizard — name, what it does, up to 3
+   personality traits, and a logo style. Industry, audience, and colors are
+   inferred for you; you never have to think like a designer.
+2. **Generate.** The backend writes the prompt and generates a set of distinct
+   concepts. Generation takes 10–30s and shows a progress state the whole time.
+3. **Everything is saved.** Each concept lands in the gallery with its prompt and
+   stays there across refreshes.
+4. **Refine.** Select any saved logo and apply a tweak (More Modern, different
+   color, …) to generate new variations — the original stays put.
+5. **Download.** Save any concept as a PNG.
+
+If generation fails — invalid brief, a slow/timed-out API, or a broken response —
+you get a clear, retryable message and your gallery is left untouched.
+
 ## Project status
 
-The backend library layer and the `health`, `generate`, and `images` routes are
-built; the `gallery` / `refine` / `download` routes and the wizard UI are in
-progress. See [`docs/development-status.md`](./docs/development-status.md) and
+Backend (all six API routes) and the full wizard/gallery UI are built; the
+complete loop — describe → generate → persistent gallery → refine → download,
+plus the three retryable failure states — is wired and verified at the API layer.
+Outstanding: in-browser QA on real devices and deployment to a live URL (both
+need a real `MISTRAL_API_KEY`). See
+[`docs/development-status.md`](./docs/development-status.md) and
 [`docs/current-sprint.md`](./docs/current-sprint.md) for the live picture, and
 [`docs/known-limitations.md`](./docs/known-limitations.md) for the honest list of
 what doesn't work well yet.

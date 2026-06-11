@@ -2,26 +2,30 @@
 
 ## Current Goal
 
-Stand up the AI Logo Generator foundation — backend libs and API routes — so the
-non-negotiables (server-side AI, persistent gallery, concurrency, the three
-failure states) are correct before the wizard UI is built on top.
+Backend foundation is **complete** — all libs and 6 API routes are in place and
+verified, so the non-negotiables (server-side AI, persistent gallery,
+concurrency, the three failure states) are correct at the API layer. Focus now
+shifts to building the wizard/gallery UI on top, starting with the persistent
+gallery view.
 
 ## Current Task
 
-**Seq 12 — `POST /api/refine` (re-generate from a saved concept)** · Area: Backend · Priority: P1 · Status: To Do
+**Deploy to a persistent-disk host + set live URL** · Area: Ops · Priority: P1 · Status: To Do
 
-Load a saved concept, fold a refinement directive/change into its prompt
-(`buildRefinePrompt`), regenerate new variations, and save them alongside the
-original (`refinedFrom` set). Reuses the generate pipeline's store + record
-steps. Per `docs/architecture.md` §4.
+Deploy to a host with a persistent volume (`STORAGE_DIR` + `DATABASE_PATH` on the
+mount); set `MISTRAL_API_KEY`; record the live URL in `project-memory.md`.
+Requires a real key + a host (user-provided) — also the first chance to verify
+happy-path generation/refine with live image bytes. README is done. Per
+`docs/architecture.md` §10.
 
 ## Next Task
 
-**Seq 14 — `GET /api/download` (PNG)** · Area: Backend · Priority: P1
+**In-browser QA pass** · Area: QA · Priority: P1
 
-Export a saved logo as a downloadable PNG (`Content-Disposition: attachment`).
-After that, frontend work begins with **Seq 20 — persistent gallery view +
-hydrate on load**, which consumes the now-working `GET /api/gallery`.
+With the deployed/dev app + a real key: click through generate → loading →
+gallery persistence (refresh) → refine → download on desktop and mobile widths;
+exercise the three failure states. Closes the outstanding interactive
+verification. Per `docs/test-plan.md`.
 
 ## Done This Sprint
 
@@ -80,8 +84,152 @@ hydrate on load**, which consumes the now-working `GET /api/gallery`.
   Verified live: empty-state, pagination + `nextOffset` cursor, newest-first
   ordering (seeded temp DB), and the 400 validation path. lint + tsc clean.
 
-### Milestone: persistence path provable end-to-end — generate → store → gallery.
-Next: re-generation (`/api/refine`) and download, then the wizard UI.
+- **Seq 12 — `POST /api/refine` (re-generate from a saved concept)** ✅ 2026-06-11
+  Loads a saved concept, validates the tweak (≥1 of directive/change; empty →
+  `INVALID_PROMPT`), rebuilds the prompt via `buildRefinePrompt`, regenerates 4
+  variations and saves them with `refinedFrom`/`directive`/`change` in `params`;
+  original is untouched (TC-004). Partial-success tolerant; nothing partial saved
+  when all fail. Verified live (curl): malformed JSON, missing `conceptId`, empty
+  tweak, bad directive, unknown concept, concept-without-brief, and full pipeline
+  → typed `UPSTREAM_ERROR` (502) with no key. lint + tsc + build clean.
+
+- **Seq 14 — `GET /api/download` (PNG)** ✅ 2026-06-11
+  Exports a saved logo by `id` as a PNG attachment: looks up the concept, reads
+  bytes via `storage.readImage` (reusing the traversal guard), and sets
+  `Content-Disposition: attachment` with a friendly filename slugged from the
+  business name + id suffix. Extension comes from the magic-byte content type, so
+  it never mislabels the bytes. Premium formats (svg / png-transparent / favicon)
+  are rejected as "not available yet" rather than faked (PRD §5.2, §9). Verified
+  live (curl): missing id, unknown id, premium-format rejection, and the happy
+  path (200, attachment headers, valid PNG matching stored bytes). lint + tsc +
+  build clean.
+
+### Milestone: backend complete — all 6 API routes done and verified. The full
+server pipeline (generate → store → gallery → refine → download) is provable
+end-to-end. Next: the wizard/gallery UI, starting with the persistent gallery.
+
+- **Seq 20 — persistent gallery view + hydrate on load** ✅ 2026-06-11
+  First frontend task. `components/Gallery.tsx` (`'use client'`) hydrates from
+  `GET /api/gallery` on mount and renders loading / retryable-error / empty /
+  grid states with `nextOffset` "Load more" pagination; `components/LogoCard.tsx`
+  shows each concept via `next/image` (same-origin `/api/images`, `unoptimized`).
+  `page.tsx` is now a server shell with the app header + `<Gallery/>`; replaced
+  the create-next-app scaffold and fixed placeholder `metadata`. Because the
+  gallery holds no client source of truth, a refresh re-fetches the persisted
+  records (FR-4 / TC-003). lint + tsc + build clean. Verified: server shell HTML
+  (header + loading state), empty-state API, and the full data path a seeded
+  concept renders from (gallery listing + image bytes). **Visual render in a real
+  browser not yet confirmed** — no headless browser here; check with `npm run dev`.
+
+- **Wizard shell + steps 1–3 (brief collection)** ✅ 2026-06-11
+  `components/Wizard.tsx` (`'use client'`) — client state machine owning the brief
+  + current step, per-step validation gating Next/Generate, Back/Next nav, and a
+  3-step progress indicator. Presentational steps: `BusinessInfoStep` (name +
+  description, char counts, inline errors, length bounds from `prompt.ts`),
+  `PersonalityStep` (trait chips capped at `MAX_TRAITS`, optional), `StyleStep`
+  (single-select cards from `LOGO_STYLES`, one required). Output is the validated
+  `LogoBrief` via an `onSubmit` prop; `submitting` prop reserved for the generate
+  call. Covers TC-005/006/007 validation at the UI layer. lint + tsc + build
+  clean. **Not yet mounted** — `page.tsx` wiring + the generate call land in the
+  next task so the button does real work when it appears.
+
+### Milestone: frontend wizard built — brief collection (steps 1–3) is complete
+and validated; next it gets mounted and wired to the generate pipeline.
+
+- **Generate + meaningful loading state** ✅ 2026-06-11
+  Wired the create loop end-to-end and mounted the UI. New `components/
+  LogoStudio.tsx` host (architecture §3) owns the gallery + generating state;
+  `Gallery.tsx` refactored to presentational (data via props). Wizard `onSubmit`
+  → `POST /api/generate`; results **prepend** to the gallery (newest first) and
+  bump the count. New `GeneratingCard.tsx` shows the 10–30s wait as expected
+  (C4 / FR-7) without blocking the gallery. A failed generation surfaces a typed
+  message and leaves the gallery + prior results untouched (C5). `page.tsx` now
+  renders `<LogoStudio/>` in a two-column layout (replaces direct `<Gallery/>`).
+  lint + tsc + build clean. Verified live: page server-renders wizard step 1 +
+  gallery shell; `/api/generate` empty brief → `INVALID_PROMPT` 400; valid brief
+  (no key) → typed `UPSTREAM_ERROR` 502 with the gallery intact. **Browser
+  interaction (step nav, spinner, prepend) not yet visually confirmed** — check
+  with `npm run dev`.
+
+### Milestone: core create loop wired — brief → generate → loading → persistent
+gallery works at the API layer and is mounted; next is the shared retryable
+`ErrorBanner` for the three failure states.
+
+- **`ErrorBanner` + three retryable failure states** ✅ 2026-06-11
+  New `lib/apiClient.ts` (`ClientApiError` + `requestJson`) preserves the API's
+  `{error,code}` on the client so the UI branches on the *kind* of failure, not a
+  bare string. New `components/ErrorBanner.tsx` renders a retryable state keyed on
+  `ErrorCode`: invalid-prompt frames as "fix your brief" (retry hidden; the wizard
+  stays interactive), while timeout / no-image / upstream / internal offer a retry.
+  `LogoStudio` now stores the typed generate error + the last brief, renders
+  `ErrorBanner` (retry re-runs the same brief; dismiss clears it), and routes its
+  gallery + generate fetches through `requestJson`. Gallery untouched on error
+  (C5 / FR-6 / TC-008–009). lint + tsc + build clean (one transient Google-Fonts
+  fetch failure on first build; passed on retry). Verified live: `INVALID_PROMPT`
+  and `UPSTREAM_ERROR` codes still flow to the page. **Banner retry/dismiss not yet
+  exercised in a browser** — check with `npm run dev`.
+
+### Milestone: failure handling complete — the three required retryable states are
+surfaced via a shared `ErrorBanner`; next is per-card select + PNG download.
+
+- **Concept card actions — select + download** ✅ 2026-06-11
+  `LogoCard` now has a selectable image region (`aria-pressed`, ring when
+  selected) and a **Download** link — a plain anchor to `GET /api/download?id=`
+  with the `download` attr; the route returns the bytes as an attachment so no JS
+  fetch is needed (FR-8). Selection state lives in `LogoStudio` (`selectedId`,
+  toggle on re-click) and threads through `Gallery` → `LogoCard`; it feeds the
+  refine flow next. lint + tsc + build clean. Verified live: the card's download
+  href returns 200 + `Content-Disposition: attachment` + valid PNG, and the
+  gallery API exposes the concept the grid maps. **Click-through (select ring,
+  download trigger) not yet confirmed in a browser** — check with `npm run dev`.
+
+### Milestone: usable-asset loop closed — any saved logo can be selected and
+downloaded as PNG; next is re-generation from a selected concept (refine toolbar).
+
+- **Refine toolbar — re-generate from a saved concept** ✅ 2026-06-11
+  New `components/RefineToolbar.tsx` appears when a concept is selected: directive
+  chips (`REFINEMENT_DIRECTIVES`) + "Different color/icon/font" (`REFINEMENT_
+  CHANGE_TARGETS`), emitting a `{directive}|{change}` refinement (no free text, so
+  an empty tweak can't be triggered from the UI). `LogoStudio` now has `runRefine`
+  → `POST /api/refine` reusing the generate path's busy flag, `GeneratingCard`,
+  prepend, and `ErrorBanner`; the original concept stays (FR-5 / TC-004). Error
+  retry was generalized to a `LastAction` data union (generate | refine) so retry
+  replays the right call without a self-referencing callback (`react-hooks/
+  immutability`). lint + tsc + build clean. Verified live: directive + change
+  refinements reach the AI call (typed `UPSTREAM_ERROR` without a key), empty
+  tweak → `INVALID_PROMPT` 400, and the original concept remains in the gallery
+  (`total:1`). **Toolbar click-through not yet confirmed in a browser** — check
+  with `npm run dev`.
+
+### Milestone: core product loop complete — describe → generate → keep (persistent
+gallery) → iterate (refine) → download, all wired and proven at the API layer.
+Remaining is polish (mobile), then README + deploy with a real key.
+
+- **Mobile pass + visual polish** ✅ 2026-06-11
+  Audited the responsive classes across the studio layout, wizard, gallery,
+  refine toolbar, and error banner. The layout was already responsive by
+  construction (single-column stacking, `flex-wrap` chips, `grid-cols-1` gallery,
+  step labels `sm:inline`); applied two conservative tweaks: tighter mobile
+  gutters on the page main (`px-4 py-8` → `sm:px-6 sm:py-10`) and a smaller
+  stacked column gap in `LogoStudio` (`gap-6` → `lg:gap-8`). lint + tsc + build
+  clean. **Visual responsiveness NOT verified** — no browser in this environment;
+  the actual small-screen check + full loop click-through still need `npm run
+  dev` (carried as outstanding QA).
+
+### Milestone: frontend feature-complete (pending in-browser QA) — full loop built
+and responsive by construction; next is README + deploy with a real key.
+
+- **README refresh (run in < 15 min)** ✅ 2026-06-11
+  Updated the existing README to match the now-complete app: API table no longer
+  marks `gallery`/`refine`/`download` as in-progress, added a "Using the app"
+  walkthrough (describe → generate → gallery → refine → download + failure
+  handling), and rewrote Project status to feature-complete (backend + UI built;
+  in-browser QA + deploy outstanding). Verified no stale "in progress" refs remain
+  and all linked docs resolve. Setup/env/scripts/deploy sections were already
+  accurate. Deploy itself remains (needs a real key + host).
+
+### Milestone: README accurate + runnable; only deploy (real key + host) and
+in-browser QA remain before submission.
 
 ## Blockers
 
