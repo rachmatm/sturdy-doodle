@@ -13,13 +13,16 @@ _Last updated: 2026-06-11_
 | Layer | Status |
 | --- | --- |
 | Backend libs (`lib/*`) | ✅ Complete |
-| API routes | 🟡 Partial (4 of 6) |
-| Frontend (wizard + gallery) | ⬜ Not started |
+| API routes | ✅ Complete (6 of 6) |
+| Frontend (wizard + gallery) | 🟡 Feature-complete (in-browser QA left) |
 | QA (concurrency, security, tests) | ⬜ Not started |
 | Deploy / live URL | ⬜ Not started |
 
-Overall: **backend/AI library layer done; persistence path (generate → store →
-gallery) provable; `refine`/`download` routes and UI still to do.**
+Overall: **backend complete (all 6 routes); frontend feature-complete and
+responsive by construction — the full product loop is wired and proven at the API
+layer (describe → generate → 10–30s loading → persistent gallery → refine →
+download, with the three retryable states via `ErrorBanner`). Remaining:
+in-browser QA + README + deploy (needs a real key).**
 
 ---
 
@@ -33,6 +36,7 @@ gallery) provable; `refine`/`download` routes and UI still to do.**
 - `storage.ts` — atomic image writes, UUID names, magic-byte typing, path-traversal guard.
 - `ai.ts` — Mistral Agents service, timeouts → `TIMEOUT`/`NO_IMAGE`/`UPSTREAM_ERROR`, `isConfigured()`.
 - `prompt.ts` — brief validation + brief→prompt construction + refine prompt.
+- `apiClient.ts` — client-safe fetch helper (`ClientApiError` + `requestJson`) preserving the `{error,code}` contract so the UI can branch on the failure code.
 
 **API routes (`src/app/api/`)**
 
@@ -40,41 +44,56 @@ gallery) provable; `refine`/`download` routes and UI still to do.**
 - `POST /api/generate` — full pipeline (validate → generate → store → record), partial-success tolerant.
 - `GET /api/images/[filename]` — serve stored bytes safely.
 - `GET /api/gallery` — paginated persisted listing (`concepts`/`total`/`nextOffset`), newest-first, `force-dynamic`. **Verified live** (empty-state, pagination cursor, ordering, 400 on bad params).
+- `POST /api/refine` — re-generate from a saved concept: load → validate tweak → `buildRefinePrompt` → 4 variations saved with `refinedFrom`; original untouched, partial-success tolerant. **Verified live** (all validation/error paths + typed upstream failure).
+- `GET /api/download` — export a saved logo by `id` as a PNG attachment (`Content-Disposition`, friendly slugged filename, magic-byte extension); premium formats rejected, not faked. **Verified live** (missing/unknown id, premium-format rejection, happy-path attachment + valid PNG bytes).
 
----
+**Frontend (`src/components/`, `src/app/`)**
 
-## In progress / next (🟡)
-
-- `POST /api/refine` (re-generate from a saved concept) — **next**, P1.
-- `GET /api/download` (PNG) — P1.
+- `LogoStudio.tsx` — client host (architecture §3): owns the gallery + generating + **selection** state, fetches the gallery on mount + paginates (via `requestJson`), wires the wizard's `onSubmit` → `POST /api/generate` and the refine toolbar → `POST /api/refine` (shared busy flag, `GeneratingCard`, and **prepend** — newest first), and renders a retryable `ErrorBanner` keyed on the typed code (retry replays the last action via a `LastAction` data union) with the gallery left untouched on failure (C5).
+- `Gallery.tsx` — presentational gallery (data via props): loading / retryable-error / empty / grid states with `nextOffset` "Load more" (FR-4 / TC-003).
+- `GeneratingCard.tsx` — meaningful 10–30s loading UI; tells the user the wait is expected (C4 / FR-7).
+- `ErrorBanner.tsx` — retryable failure state keyed on `ErrorCode`; invalid-prompt frames as "fix your brief" (no retry), timeout / no-image / upstream / internal offer retry (C5 / FR-6 / TC-008–009).
+- `RefineToolbar.tsx` — appears for the selected concept; directive chips + "Different color/icon/font" emit a `{directive}|{change}` refinement (no free text) (FR-5 / TC-004).
+- `Wizard.tsx` + `steps/` — brief-collection state machine (steps 1–3) feeding `onSubmit(brief)`; **now mounted** via `LogoStudio`.
+- `LogoCard.tsx` — one saved concept via `next/image` (same-origin `/api/images`, `unoptimized`); selectable image region (`aria-pressed` + ring) and a PNG **Download** link (anchor → `GET /api/download?id=`, `download` attr) (FR-8).
+- `steps/BusinessInfoStep.tsx` — name + description inputs, char counts, inline errors, length bounds from `prompt.ts` (TC-005/006/007).
+- `steps/PersonalityStep.tsx` — trait chips, capped at `MAX_TRAITS`, optional.
+- `steps/StyleStep.tsx` — single-select style cards from `LOGO_STYLES`, one required.
+- `page.tsx` / `layout.tsx` — server shell with app header + `<LogoStudio/>` (two-column); create-next-app scaffold + placeholder metadata replaced.
 
 ---
 
 ## Outstanding (⬜)
-
-- `GET /api/download` (PNG).
-- Frontend: wizard shell, steps 1–3, generate + loading state, **persistent gallery view (hydrate on load)**, concept card (select / re-generate / download), re-generate toolbar, PNG download, `ErrorBanner` (3 retryable states), mobile pass.
+- In-browser QA: full loop click-through + responsiveness on real devices/widths (no browser in the build env; code is responsive by construction).
 - QA: concurrency stress-test, validation + failure-state cases, security checks (injection, traversal, key-server-side).
-- README (run in < 15 min) + deploy to a host with a persistent disk; set the live URL.
+- Deploy to a host with a persistent disk; set the live URL. _(README done — runnable + accurate.)_
 
 ---
 
 ## Verified
 
-- `lint` + `tsc` clean across the library layer and the four routes.
+- `lint` + `tsc` + `build` clean across the library layer, all six routes, and the full frontend (studio host, gallery, wizard + steps, generating card, error banner, logo card select/download). _One earlier build hit a transient Google-Fonts fetch failure (`next/font/google`, network); a retry passed clean._
 - Error paths on `/api/generate` exercised via `curl` (`INVALID_REQUEST`, `INVALID_PROMPT`, `UPSTREAM_ERROR`).
 - Storage traversal rejections smoke-tested.
 - `/api/gallery` exercised live: empty-state, pagination + `nextOffset` cursor, newest-first ordering (seeded temp DB), and `INVALID_REQUEST` on malformed params.
+- `/api/refine` exercised live: malformed JSON, missing `conceptId`, empty tweak, unknown directive, unknown concept, and concept-without-brief all return the right code; full pipeline (seeded concept + valid tweak) reaches the AI call and surfaces a typed `UPSTREAM_ERROR` (502) without a key.
+- `/api/download` exercised live: missing id and unknown id → `INVALID_REQUEST`; premium format (`svg`) rejected as not-available; happy path (seeded concept + on-disk PNG) → 200 with `Content-Disposition: attachment`, slugged filename, and downloaded bytes a valid PNG.
+- Mounted UI exercised live (server): `/` server-renders the wizard step 1 (business name + description prompts) + gallery shell; `POST /api/generate` with an empty brief → `INVALID_PROMPT` 400, and with a valid brief but no key → typed `UPSTREAM_ERROR` 502, with the gallery still empty afterward (nothing partial saved, C5). The typed codes flow to the page so `ErrorBanner` can frame each state.
+- Card actions exercised live (server): with a seeded concept, the card's download href (`/api/download?id=`) returns 200 + `Content-Disposition: attachment` + valid PNG bytes, and the gallery API exposes the concept the grid maps over.
+- Refine toolbar exercised live (server): with a seeded concept, a directive and a change-target both reach the AI call (typed `UPSTREAM_ERROR` 502 without a key), an empty tweak → `INVALID_PROMPT` 400, and the original concept remains in the gallery (`total:1`) — TC-004's "original remains" at the API layer.
+- Gallery UI: server shell HTML renders the app header + loading state; empty-state gallery API returns `{concepts:[],total:0,nextOffset:null}`; full data path a seeded concept renders from (gallery listing carries the brief; `/api/images/<id>.png` serves valid PNG bytes) confirmed via the running server.
 
 ## Not yet verified
 
-- Happy-path generation against a real `MISTRAL_API_KEY` (live image bytes).
-- Gallery persistence across refresh **in the browser** (route proven; UI not built).
+- Happy-path generation **and refinement** against a real `MISTRAL_API_KEY` (live image bytes).
+- Gallery render + persistence across refresh **in a real browser** (server shell + every API the client consumes are proven; the hydrated React grid has not been visually confirmed — no headless browser in this environment; check with `npm run dev`).
+- Full loop **interactively** (lint/tsc/build pass and the UI is mounted via `LogoStudio`; step navigation, trait cap, inline validation, the generating spinner, prepend-on-success, `ErrorBanner` retry/dismiss, card select-ring / download click, and the refine toolbar have not been exercised in a browser — no headless browser here; check with `npm run dev`).
+- **Responsiveness visually** — the layout is responsive by construction and the mobile-pass class tweaks build clean, but small-screen rendering has not been eyeballed; verify at mobile/desktop widths with `npm run dev`.
 - Concurrency under real simultaneous load.
 
 ---
 
 ## Known issues
 
-See `known-limitations.md`. No open blockers; the gap is simply unbuilt UI and
-the remaining routes.
+See `known-limitations.md`. No open blockers; the backend is complete and the
+gap is simply the unbuilt UI (plus QA and deploy).
