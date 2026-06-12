@@ -7,7 +7,10 @@ prompt — is saved to a **personal gallery that persists across refreshes**. Pi
 any saved logo, tweak the prompt, and re-generate without starting over.
 
 - All AI calls run **server-side** (the API key never reaches the browser).
-- Images are stored on disk; gallery records live in SQLite — both persistent.
+- Storage is **pluggable, selected from the environment**: images on the local
+  filesystem or **Vercel Blob**, gallery records in local **SQLite** or **Turso** —
+  so the same build runs on a persistent-disk host *or* on a diskless serverless
+  platform like Vercel. All four options are persistent.
 - Built to stay correct under **concurrent users** and to handle the three
   failure states (invalid prompt, API timeout, broken response) visibly.
 
@@ -36,7 +39,8 @@ npm install
 ```
 
 `npm install` also builds the native `better-sqlite3` module (prebuilt binaries,
-no toolchain needed in the common case).
+no toolchain needed in the common case); it's only loaded when the local SQLite
+backend is active, so a Turso deploy is unaffected by it.
 
 ### 3. Configure environment
 
@@ -50,11 +54,20 @@ Then open `.env.local` and set your key:
 | --- | --- | --- |
 | `MISTRAL_API_KEY` | **Yes** | Server-side AI key. Get one at <https://console.mistral.ai/>. |
 | `MISTRAL_AGENT_ID` | No | Reuse a pre-created image-generation agent. Leave blank to auto-create one on first use. |
-| `STORAGE_DIR` | No | Where image bytes are written. Defaults to `./storage/uploads`. |
-| `DATABASE_PATH` | No | SQLite file for saved logos. Defaults to `./storage/gallery.db`. |
+| `STORAGE_DIR` | No | Where image bytes are written (local filesystem backend). Defaults to `./storage/uploads`. |
+| `DATABASE_PATH` | No | SQLite file for saved logos (local SQLite backend). Defaults to `./storage/gallery.db`. |
 
-Only `MISTRAL_API_KEY` is needed to run. `.env.local` is gitignored — never
-commit it.
+Only `MISTRAL_API_KEY` is needed to run locally. `.env.local` is gitignored —
+never commit it.
+
+**Storage backend (auto-selected at runtime).** Leave the variables below unset
+to use the local filesystem + SQLite defaults above. Set a pair to switch that
+half to its cloud backend — needed on a diskless host like Vercel:
+
+| Variable(s) | Switches to | Notes |
+| --- | --- | --- |
+| `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` | **Turso** (libSQL) for gallery records | Both must be set. Create a DB at <https://turso.tech/>. |
+| `BLOB_STORE_ID` + `BLOB_READ_WRITE_TOKEN` | **Vercel Blob** for image bytes | Both must be set. Injected automatically when you attach a Blob store on Vercel. |
 
 ### 4. Start the dev server
 
@@ -125,11 +138,11 @@ you get a clear, retryable message and your gallery is left untouched.
 
 ## Project status
 
-Backend (all six API routes) and the full wizard/gallery UI are built; the
-complete loop — describe → generate → persistent gallery → refine → download,
-plus the three retryable failure states — is wired and verified at the API layer.
-Outstanding: in-browser QA on real devices and deployment to a live URL (both
-need a real `MISTRAL_API_KEY`). See
+Backend (all six API routes) and the full wizard/gallery UI are built and
+verified in a real browser; the complete loop — describe → generate → persistent
+gallery → refine → download, plus the three retryable failure states — works
+end-to-end. Storage is now Vercel-compatible (Turso + Blob, verified live against
+both backends), so the only outstanding item is deployment to a live URL. See
 [`docs/development-status.md`](./docs/development-status.md) and
 [`docs/current-sprint.md`](./docs/current-sprint.md) for the live picture, and
 [`docs/known-limitations.md`](./docs/known-limitations.md) for the honest list of
@@ -139,12 +152,24 @@ what doesn't work well yet.
 
 ## Deployment
 
-The app needs a **persistent writable disk** for image storage and the SQLite
-file, so deploy to a host with a persistent volume (Railway, Render, Fly.io, a
-VPS) rather than an ephemeral serverless filesystem.
+The storage backend is chosen from the environment, so the app deploys two ways.
+
+**Vercel (or any diskless serverless host).** Provide cloud storage instead of a
+local disk:
+
+1. Set `MISTRAL_API_KEY` (and any other provider keys).
+2. Attach a **Vercel Blob** store — this injects `BLOB_STORE_ID` and
+   `BLOB_READ_WRITE_TOKEN` automatically.
+3. Create a **Turso** database and set `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`.
+4. Deploy. The native `better-sqlite3` module is never loaded when Turso is
+   active, so it won't break the serverless build.
+
+**Persistent-disk host (Railway, Render, Fly.io, a VPS).** Use the local
+backends against a mounted volume:
 
 1. Set `MISTRAL_API_KEY` in the host's environment.
-2. Point `STORAGE_DIR` and `DATABASE_PATH` at the mounted volume.
+2. Point `STORAGE_DIR` and `DATABASE_PATH` at the mounted volume (leave the
+   Turso/Blob variables unset).
 3. `npm run build && npm run start`.
 
 `/api/health` doubles as a readiness probe.
@@ -154,6 +179,6 @@ VPS) rather than an ephemeral serverless filesystem.
 ## Tech stack
 
 Next.js 16 (App Router) · React 19 · TypeScript 5 · Tailwind CSS v4 ·
-Mistral Agents API (`image_generation`) · SQLite (`better-sqlite3`, WAL) ·
-local filesystem storage. Rationale in
-[`docs/tech-stack.md`](./docs/tech-stack.md).
+Mistral Agents API (`image_generation`) · records in SQLite (`better-sqlite3`,
+WAL) or Turso (`@libsql/client`) · images on the local filesystem or Vercel Blob
+(`@vercel/blob`). Rationale in [`docs/tech-stack.md`](./docs/tech-stack.md).

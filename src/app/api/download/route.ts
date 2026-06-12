@@ -49,14 +49,14 @@ export async function GET(req: NextRequest) {
     return jsonError('INVALID_REQUEST', 'Unsupported download format.');
   }
 
-  const concept = getConcept(id);
+  const concept = await getConcept(id);
   if (!concept) {
     return jsonError('INVALID_REQUEST', 'That logo is no longer in the gallery.');
   }
 
-  let result: ReturnType<typeof readImage>;
+  let result: Awaited<ReturnType<typeof readImage>>;
   try {
-    result = readImage(concept.imageFilename);
+    result = await readImage(concept.imageFilename);
   } catch (err) {
     if (err instanceof InvalidFilenameError) {
       return jsonError('INVALID_REQUEST', 'That logo could not be found.');

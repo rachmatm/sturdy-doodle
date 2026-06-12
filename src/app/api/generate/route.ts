@@ -39,7 +39,7 @@ async function mapWithConcurrency<T, R>(
 async function generateOne(prompt: string, brief: LogoBrief): Promise<LogoConcept> {
   const { bytes, model } = await generateImage(prompt);
   const id = randomUUID();
-  const stored = saveImage(bytes, id);
+  const stored = await saveImage(bytes, id);
   const concept: LogoConcept = {
     id: stored.id,
     prompt,
@@ -50,7 +50,7 @@ async function generateOne(prompt: string, brief: LogoBrief): Promise<LogoConcep
     createdAt: new Date().toISOString(),
     params: { brief },
   };
-  return insertConcept(concept);
+  return await insertConcept(concept);
 }
 
 export async function POST(req: Request) {

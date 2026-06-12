@@ -31,8 +31,10 @@ export async function GET(request: Request) {
     const requested = parseNonNegativeInt(params.get('limit'), DEFAULT_LIMIT);
     const limit = Math.min(Math.max(requested, 1), MAX_LIMIT);
 
-    const total = countConcepts();
-    const concepts = listConcepts(limit, offset);
+    const [total, concepts] = await Promise.all([
+      countConcepts(),
+      listConcepts(limit, offset),
+    ]);
 
     // Cursor for the next page; null once this page reaches the end.
     const nextStart = offset + concepts.length;
