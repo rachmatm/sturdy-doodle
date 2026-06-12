@@ -245,6 +245,19 @@ in-browser QA remain before submission.
 ### Milestone: app verified in a real browser — full loop + three failure states +
 security all pass; only deploy and the two quota/load-gated checks remain.
 
+- **Automated fallback tests (vitest)** ✅ 2026-06-12
+  Added the project's first automated suite: `vitest` dev-dep + `npm test` /
+  `test:watch`. `src/lib/ai.test.ts` (9 tests, ~250ms, mocked `fetch`, no real
+  API calls) proves the 2-pixazo + 2-mistral provider×key fallback: in-pool 429
+  rollover, first-success short-circuit, cross-provider rollover, full chain
+  order + last-error surfacing, key de-dup, and `INTERNAL` when unconfigured. The
+  suite caught a footgun — keys for a provider not listed in `IMAGE_PROVIDER` are
+  ignored (order defaults to `mistral`); captured as a regression test (the live
+  `IMAGE_PROVIDER=pixazo,mistral` is unaffected). lint + tsc + build clean.
+
+### Milestone: fallback logic now has a deterministic regression net — re-verifying
+the multi-key rollover is `npm test` (free, no quota) instead of a manual QA pass.
+
 ## Blockers
 
 None
