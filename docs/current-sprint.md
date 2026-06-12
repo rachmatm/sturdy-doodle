@@ -2,11 +2,11 @@
 
 ## Current Goal
 
-Backend foundation is **complete** — all libs and 6 API routes are in place and
-verified, so the non-negotiables (server-side AI, persistent gallery,
-concurrency, the three failure states) are correct at the API layer. Focus now
-shifts to building the wizard/gallery UI on top, starting with the persistent
-gallery view.
+Backend + frontend are **complete and verified in a real browser** (2026-06-12
+in-browser QA pass). The full product loop and the three failure states are proven
+through the UI. The only remaining work is **deployment** (needs a host) plus two
+quota/load-gated checks (refine happy-path against a real key; concurrency under
+real simultaneous load).
 
 ## Current Task
 
@@ -14,18 +14,15 @@ gallery view.
 
 Deploy to a host with a persistent volume (`STORAGE_DIR` + `DATABASE_PATH` on the
 mount); set `MISTRAL_API_KEY`; record the live URL in `project-memory.md`.
-Requires a real key + a host (user-provided) — also the first chance to verify
-happy-path generation/refine with live image bytes. README is done. Per
-`docs/architecture.md` §10.
+Requires a host (user-provided). Per `docs/architecture.md` §10.
 
 ## Next Task
 
-**In-browser QA pass** · Area: QA · Priority: P1
+**Refine happy-path + concurrency, against the deployed app** · Area: QA · Priority: P2
 
-With the deployed/dev app + a real key: click through generate → loading →
-gallery persistence (refresh) → refine → download on desktop and mobile widths;
-exercise the three failure states. Closes the outstanding interactive
-verification. Per `docs/test-plan.md`.
+Once deployed (or when the free-tier image quota resets), confirm TC-REF-001..003
+(refine adds new variations, original stays) and TC-CON-001 (two concurrent
+clients). Both are quota/load-gated, not code gaps. Per `docs/test-plan.md`.
 
 ## Done This Sprint
 
@@ -230,6 +227,36 @@ and responsive by construction; next is README + deploy with a real key.
 
 ### Milestone: README accurate + runnable; only deploy (real key + host) and
 in-browser QA remain before submission.
+
+- **In-browser QA pass** ✅ 2026-06-12
+  Drove the real UI end-to-end in headless Chrome (Playwright, isolated temp
+  DB/storage). All wizard validation (TC-BIZ/PER/STYLE), live generation with real
+  Mistral JPEGs rendering in-page (8/8 decode), gallery persistence across refresh
+  (TC-GAL-001/002), select + change-selection (TC-SEL-001/002), a valid honest-named
+  JPEG download (TC-DL-001), the refine generating/failure flow (gallery untouched,
+  C5), all three `ErrorBanner` states (invalid-prompt no-retry; timeout/upstream
+  retry; retry re-issues; dismiss clears), mobile single-column (390px, no
+  overflow), and security (TC-SEC-001/002/003/004) all passed. Disk integrity clean
+  (0 zero-byte/`.tmp`). Two findings carried forward: refine **happy-path** and
+  concurrency-under-load remain quota/load-gated (not code gaps); the model returns
+  **JPEG not PNG** so "Download PNG" copy is technically inaccurate (the file is
+  labeled honestly via magic bytes). Full detail in `development-status.md`.
+
+### Milestone: app verified in a real browser — full loop + three failure states +
+security all pass; only deploy and the two quota/load-gated checks remain.
+
+- **Automated fallback tests (vitest)** ✅ 2026-06-12
+  Added the project's first automated suite: `vitest` dev-dep + `npm test` /
+  `test:watch`. `src/lib/ai.test.ts` (9 tests, ~250ms, mocked `fetch`, no real
+  API calls) proves the 2-pixazo + 2-mistral provider×key fallback: in-pool 429
+  rollover, first-success short-circuit, cross-provider rollover, full chain
+  order + last-error surfacing, key de-dup, and `INTERNAL` when unconfigured. The
+  suite caught a footgun — keys for a provider not listed in `IMAGE_PROVIDER` are
+  ignored (order defaults to `mistral`); captured as a regression test (the live
+  `IMAGE_PROVIDER=pixazo,mistral` is unaffected). lint + tsc + build clean.
+
+### Milestone: fallback logic now has a deterministic regression net — re-verifying
+the multi-key rollover is `npm test` (free, no quota) instead of a manual QA pass.
 
 ## Blockers
 
