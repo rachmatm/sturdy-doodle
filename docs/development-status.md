@@ -4,7 +4,7 @@ Snapshot of what is built, in progress, and outstanding. Update at the end of
 every meaningful task. Task-level detail lives in `current-sprint.md`; durable
 context in `project-memory.md`.
 
-_Last updated: 2026-06-11_
+_Last updated: 2026-06-12_
 
 ---
 
@@ -14,15 +14,17 @@ _Last updated: 2026-06-11_
 | --- | --- |
 | Backend libs (`lib/*`) | ✅ Complete |
 | API routes | ✅ Complete (6 of 6) |
-| Frontend (wizard + gallery) | 🟡 Feature-complete (in-browser QA left) |
-| QA (concurrency, security, tests) | ⬜ Not started |
+| Frontend (wizard + gallery) | ✅ Complete (in-browser QA passed 2026-06-12) |
+| QA (security, validation, UI loop) | ✅ Passed in-browser 2026-06-12; ⬜ concurrency-under-load left |
 | Deploy / live URL | ⬜ Not started |
 
-Overall: **backend complete (all 6 routes); frontend feature-complete and
-responsive by construction — the full product loop is wired and proven at the API
-layer (describe → generate → 10–30s loading → persistent gallery → refine →
-download, with the three retryable states via `ErrorBanner`). Remaining:
-in-browser QA + README + deploy (needs a real key).**
+Overall: **backend complete (all 6 routes); frontend complete and verified in a
+real browser (2026-06-12) — the full product loop is proven end-to-end through the
+UI (describe → generate → 10–30s loading → persistent gallery → select → refine →
+download), with the three retryable states via `ErrorBanner` and all security
+checks passing. Remaining: deploy (needs a host) + the two quota/load-gated items
+below (refine happy-path against a real key, concurrency under real simultaneous
+load).**
 
 ---
 
@@ -64,13 +66,43 @@ in-browser QA + README + deploy (needs a real key).**
 ---
 
 ## Outstanding (⬜)
-- In-browser QA: full loop click-through + responsiveness on real devices/widths (no browser in the build env; code is responsive by construction).
-- QA: concurrency stress-test, validation + failure-state cases, security checks (injection, traversal, key-server-side).
 - Deploy to a host with a persistent disk; set the live URL. _(README done — runnable + accurate.)_
+- Refine **happy-path** against a real key (TC-REF-001..003): every refine attempt
+  during QA hit the free-tier image rate limit (`429`); the refine *failure* path
+  and "original stays" are verified, but new-variations-added is still quota-gated.
+- Concurrency under real simultaneous load (TC-CON-001): proven by construction
+  (UUID names + atomic temp→rename + WAL/busy_timeout; 12 generations left 0
+  zero-byte/`.tmp` files) but not stress-tested with concurrent live clients.
 
 ---
 
 ## Verified
+
+- **In-browser QA pass (2026-06-12, headless Chrome via Playwright against
+  `npm run dev`, isolated temp DB/storage):** drove the real UI end-to-end.
+  - Wizard (Phase A, 13/13): TC-BIZ-002/003 inline "required" errors block
+    advance; TC-BIZ-001 advances; TC-PER-002 trait cap = 3 (8 others disabled,
+    `3/3 selected`, deselect releases); TC-STYLE-002 "Select a logo style." blocks
+    generate; TC-STYLE-001 selects; Back preserves state.
+  - Live generate + gallery: real Mistral JPEG concepts generated **through the
+    browser** and **8/8 images decode in-page** (`naturalWidth>0`); TC-GAL-001
+    gallery persists identically across refresh (server-hydrated, no client source
+    of truth); TC-GAL-002 bytes on disk + DB rows match the API total.
+  - Selection/download/refine: TC-SEL-001 ring + `aria-pressed`; TC-SEL-002 moves
+    selection; TC-DL-001 downloads a valid JPEG with an honest slugged filename
+    (`vela-roastery-<id>.jpg`); refine shows the generating state and, on the
+    free-tier `429`, surfaces a retryable banner with the gallery untouched (C5).
+  - Three failure states via `ErrorBanner` (Phase D, injected server codes — the
+    server emits them live): INVALID_PROMPT → "Check your brief" with **no** retry;
+    TIMEOUT → "That took too long" + retry; UPSTREAM_ERROR → "The logo service had
+    trouble" + retry; "Try again" re-issues the request; ✕ dismisses; gallery
+    intact throughout. Plus a **real (non-injected)** live UPSTREAM_ERROR banner
+    captured when generation hit the quota.
+  - Mobile (390px): single-column gallery, no horizontal overflow.
+  - Security: TC-SEC-001 injected `<img onerror>`/`<script>` fired no dialog;
+    TC-SEC-002 gallery table intact after SQL-ish input; **TC-SEC-003** key absent
+    from page HTML and all 17 client JS chunks (only referenced in `src/lib/ai.ts`);
+    TC-SEC-004 all traversal variants rejected (400/404, no `/etc/passwd`).
 
 - **Happy path against a real `MISTRAL_API_KEY` (2026-06-11, `npm run dev`):** `/api/health` → `aiKeyConfigured:true`; `POST /api/generate` (full brief) → 200 with real **1024×768 JPEG** logos saved to disk (75–115 KB each), each carrying its prompt with an inferred palette (TC-001/002); `/api/images/<id>.jpg` serves valid JPEG bytes; `/api/gallery` reflects them (`total:4`) and they persist across re-reads (TC-003); `/api/download?id=` returns `Content-Disposition: attachment`, a slugged filename, and valid JPEG bytes (FR-8). **Refine happy path (TC-004) NOT yet confirmed** — every refine attempt hit the provider's free-tier image rate limit (`429 image_generation rate limit reached`) and correctly returned `UPSTREAM_ERROR` 502 with the gallery left intact (nothing partial saved — TC-009 verified live). Two findings: (a) generate fans out **12** image calls and the free tier rate-limits hard — only ~4 succeeded; partial-success tolerance is what kept it green; consider lowering the fan-out to fit the free tier. (b) the model returns **JPEG, not PNG** — download labels the file `.jpg` honestly via magic bytes (not faked), so the "Download as PNG" wording in the PRD/README is inaccurate; it is "download the raster as generated."
 - `lint` + `tsc` + `build` clean across the library layer, all six routes, and the full frontend (studio host, gallery, wizard + steps, generating card, error banner, logo card select/download). _One earlier build hit a transient Google-Fonts fetch failure (`next/font/google`, network); a retry passed clean._
@@ -86,11 +118,12 @@ in-browser QA + README + deploy (needs a real key).**
 
 ## Not yet verified
 
-- Happy-path **refinement** (TC-004) against a real key — blocked so far by the provider's free-tier image rate limit (`429`); generate happy-path is now verified (see above), and refine reuses the same `generateImage` path, so this is a quota wait, not a code gap. Retry once the image quota resets (hourly/daily window).
-- Gallery render + persistence across refresh **in a real browser** (server shell + every API the client consumes are proven; the hydrated React grid has not been visually confirmed — no headless browser in this environment; check with `npm run dev`).
-- Full loop **interactively** (lint/tsc/build pass and the UI is mounted via `LogoStudio`; step navigation, trait cap, inline validation, the generating spinner, prepend-on-success, `ErrorBanner` retry/dismiss, card select-ring / download click, and the refine toolbar have not been exercised in a browser — no headless browser here; check with `npm run dev`).
-- **Responsiveness visually** — the layout is responsive by construction and the mobile-pass class tweaks build clean, but small-screen rendering has not been eyeballed; verify at mobile/desktop widths with `npm run dev`.
-- Concurrency under real simultaneous load.
+- Happy-path **refinement** (TC-REF-001..003) against a real key — still blocked by
+  the provider's free-tier image rate limit (`429`); during the 2026-06-12 QA every
+  refine attempt hit it. Refine reuses the verified `generateImage` path and its
+  failure handling + "original stays" are confirmed, so this is a quota wait, not a
+  code gap. Retry once the image quota resets.
+- Concurrency under real simultaneous load (TC-CON-001) — see Outstanding.
 
 ---
 

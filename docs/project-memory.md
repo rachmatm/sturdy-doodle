@@ -61,3 +61,13 @@ anonymous gallery; no streaming and no automated test suite yet.
 - AI provider: Mistral Agents API (`image_generation`, FLUX1.1 [pro] Ultra)
 - Env: `MISTRAL_API_KEY` (required), `MISTRAL_AGENT_ID`, `STORAGE_DIR`, `DATABASE_PATH`
 - Delivery board (Notion): https://app.notion.com/p/f7a7f65bae574f3ba6a0bf864b929633
+- **In-browser QA recipe**: the build env ships `google-chrome-stable`. Run
+  `npm run dev` (override `STORAGE_DIR`/`DATABASE_PATH` to a temp dir for an
+  isolated gallery) and drive it with `playwright-core` using
+  `chromium.launch({ channel: 'chrome' })` — no browser download, zero repo
+  footprint. Full loop + 3 failure states + security verified this way 2026-06-12.
+- **Free-tier image quota** rate-limits hard: a single generate fans out 12
+  `image_generation` calls and the provider returns `429 image_generation rate
+  limit reached` once the window is spent (intermittent — a few succeed, then it
+  dries up). Partial-success tolerance keeps generate green; refine happy-path
+  verification waits on a quota reset (or a paid tier).
