@@ -1,0 +1,201 @@
+/**
+ * Unit tests for the multi-provider / multi-key fallback in `ai.ts`.
+ *
+ * The fallback chain (provider order × key pool, rolling over on any per-key
+ * failure) is pure, deterministic logic, so we exercise it against a mocked
+ * `fetch` — no real Mistral/Pixazo calls, no API quota, no rate-limit flakiness.
+ * Each test sets only the env vars it needs; `ai.ts` reads `process.env` at call
+ * time, so no module reset is required. Mistral tests set `MISTRAL_AGENT_ID` to
+ * skip live agent creation (and avoid touching the module-level agent cache).
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { generateImage, isConfigured, MISTRAL_MODEL, PIXAZO_MODEL } from './ai';
+import { ApiException } from './http';
+
+const ENV_KEYS = [
+  'IMAGE_PROVIDER',
+  'MISTRAL_API_KEY',
+  'MISTRAL_API_KEYS',
+  'PIXAZO_API_KEY',
+  'PIXAZO_API_KEYS',
+  'MISTRAL_AGENT_ID',
+] as const;
+
+const IMG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47]); // non-empty; content unchecked
+
+function jsonResponse(obj: unknown): Response {
+  return new Response(JSON.stringify(obj), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/**
+ * Build a mocked `fetch` that grants success only to the listed keys; every
+ * other key gets a 429 (the free-tier rate-limit case the fallback exists for).
+ * `generateKeys` records, in order, every key tried at the generate step — so
+ * tests can assert exactly which keys were attempted and in what sequence.
+ */
+function buildFetch({
+  goodPixazo = new Set<string>(),
+  goodMistral = new Set<string>(),
+}: { goodPixazo?: Set<string>; goodMistral?: Set<string> } = {}) {
+  const generateKeys: string[] = [];
+
+  const fn = vi.fn(async (url: string | URL, init: RequestInit = {}) => {
+    const u = String(url);
+    const headers = (init.headers ?? {}) as Record<string, string>;
+
+    // Image-byte downloads (pixazo output URL or mistral file content).
+    if (u.startsWith('https://img.example/') || u.includes('/files/')) {
+      return new Response(IMG_BYTES, { status: 200 });
+    }
+
+    // Pixazo synchronous generate.
+    if (u.includes('gateway.pixazo.ai')) {
+      const key = headers['Ocp-Apim-Subscription-Key'];
+      generateKeys.push(key);
+      if (!goodPixazo.has(key)) return new Response('rate limited', { status: 429 });
+      return jsonResponse({ output: 'https://img.example/pix.png' });
+    }
+
+    // Mistral conversation (agent supplied via MISTRAL_AGENT_ID, so no /agents call).
+    if (u.includes('api.mistral.ai') && u.endsWith('/conversations')) {
+      const key = String(headers['Authorization']).replace('Bearer ', '');
+      generateKeys.push(key);
+      if (!goodMistral.has(key)) return new Response('rate limited', { status: 429 });
+      return jsonResponse({ outputs: [{ content: [{ file_id: 'file-1' }] }] });
+    }
+
+    throw new Error(`unexpected fetch: ${u}`);
+  });
+
+  return { fn, generateKeys };
+}
+
+async function catchErr(p: Promise<unknown>): Promise<unknown> {
+  try {
+    await p;
+    throw new Error('expected promise to reject, but it resolved');
+  } catch (err) {
+    return err;
+  }
+}
+
+beforeEach(() => {
+  for (const k of ENV_KEYS) delete process.env[k];
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  for (const k of ENV_KEYS) delete process.env[k];
+});
+
+describe('isConfigured', () => {
+  it('is false when no provider key is set', () => {
+    expect(isConfigured()).toBe(false);
+  });
+
+  it('is true once a key for an in-order provider is present', () => {
+    process.env.MISTRAL_API_KEY = 'm1'; // mistral is the default provider order
+    expect(isConfigured()).toBe(true);
+  });
+
+  // Documents a footgun: the provider order defaults to ['mistral'], so keys for
+  // a provider NOT in IMAGE_PROVIDER are ignored. A pixazo-only deployment that
+  // forgets `IMAGE_PROVIDER=pixazo` reports unconfigured and never uses its keys.
+  it('ignores pixazo keys when IMAGE_PROVIDER is unset (default order is mistral)', () => {
+    process.env.PIXAZO_API_KEY = 'p1';
+    expect(isConfigured()).toBe(false);
+
+    process.env.IMAGE_PROVIDER = 'pixazo';
+    expect(isConfigured()).toBe(true);
+  });
+});
+
+describe('generateImage fallback', () => {
+  it('rolls over a rate-limited key to the next key in the same pool', async () => {
+    // 2 pixazo keys; the first 429s, the second succeeds.
+    process.env.IMAGE_PROVIDER = 'pixazo';
+    process.env.PIXAZO_API_KEY = 'p1';
+    process.env.PIXAZO_API_KEYS = 'p2';
+    const { fn, generateKeys } = buildFetch({ goodPixazo: new Set(['p2']) });
+    vi.stubGlobal('fetch', fn);
+
+    const img = await generateImage('a clean wordmark');
+
+    expect(img.model).toBe(PIXAZO_MODEL);
+    expect(img.bytes.length).toBeGreaterThan(0);
+    expect(generateKeys).toEqual(['p1', 'p2']); // p1 tried then rolled to p2
+  });
+
+  it('short-circuits on the first successful key (no needless attempts)', async () => {
+    process.env.IMAGE_PROVIDER = 'pixazo';
+    process.env.PIXAZO_API_KEY = 'p1';
+    process.env.PIXAZO_API_KEYS = 'p2';
+    const { fn, generateKeys } = buildFetch({ goodPixazo: new Set(['p1', 'p2']) });
+    vi.stubGlobal('fetch', fn);
+
+    const img = await generateImage('brief');
+
+    expect(img.model).toBe(PIXAZO_MODEL);
+    expect(generateKeys).toEqual(['p1']); // p2 never attempted
+  });
+
+  it('rolls over across providers when a whole pool is exhausted', async () => {
+    // Both pixazo keys fail; falls through to mistral, which succeeds.
+    process.env.IMAGE_PROVIDER = 'pixazo,mistral';
+    process.env.PIXAZO_API_KEY = 'p1';
+    process.env.PIXAZO_API_KEYS = 'p2';
+    process.env.MISTRAL_API_KEY = 'm1';
+    process.env.MISTRAL_AGENT_ID = 'agent-x';
+    const { fn, generateKeys } = buildFetch({ goodMistral: new Set(['m1']) });
+    vi.stubGlobal('fetch', fn);
+
+    const img = await generateImage('brief');
+
+    expect(img.model).toBe(MISTRAL_MODEL);
+    expect(generateKeys).toEqual(['p1', 'p2', 'm1']);
+  });
+
+  it('walks the full 2-pixazo + 2-mistral chain in order, then throws the last error', async () => {
+    process.env.IMAGE_PROVIDER = 'pixazo,mistral';
+    process.env.PIXAZO_API_KEY = 'p1';
+    process.env.PIXAZO_API_KEYS = 'p2';
+    process.env.MISTRAL_API_KEY = 'm1';
+    process.env.MISTRAL_API_KEYS = 'm2';
+    process.env.MISTRAL_AGENT_ID = 'agent-x';
+    const { fn, generateKeys } = buildFetch(); // every key 429s
+    vi.stubGlobal('fetch', fn);
+
+    const err = await catchErr(generateImage('brief'));
+
+    expect(err).toBeInstanceOf(ApiException);
+    expect((err as ApiException).code).toBe('UPSTREAM_ERROR');
+    expect(generateKeys).toEqual(['p1', 'p2', 'm1', 'm2']);
+  });
+
+  it('de-dupes a key repeated across the single + list vars', async () => {
+    process.env.IMAGE_PROVIDER = 'pixazo';
+    process.env.PIXAZO_API_KEY = 'dup';
+    process.env.PIXAZO_API_KEYS = 'dup'; // same key — should be tried once
+    const { fn, generateKeys } = buildFetch(); // fails, so we can count attempts
+    vi.stubGlobal('fetch', fn);
+
+    await catchErr(generateImage('brief'));
+
+    expect(generateKeys).toEqual(['dup']);
+  });
+
+  it('throws INTERNAL when no provider is configured', async () => {
+    const { fn } = buildFetch();
+    vi.stubGlobal('fetch', fn);
+
+    const err = await catchErr(generateImage('brief'));
+
+    expect(err).toBeInstanceOf(ApiException);
+    expect((err as ApiException).code).toBe('INTERNAL');
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
