@@ -1,30 +1,42 @@
 /**
- * SQLite persistence for saved logo records (architecture.md §5, §7).
+ * Persistence for saved logo records (architecture.md §5, §7).
  *
- * Embedded `better-sqlite3` in WAL mode: many readers proceed during a write,
- * and `busy_timeout` makes concurrent writers wait rather than throw under
- * contention. All access goes through prepared statements — user input is bound,
- * never concatenated — which closes the SQL-injection surface (test-plan
- * TC-SEC-001).
+ * Two interchangeable backends, selected at runtime from the environment:
+ *  - **Turso** (`@libsql/client`) when `TURSO_AUTH_TOKEN` and
+ *    `TURSO_DATABASE_URL` are both set — used on hosts without a writable disk
+ *    (e.g. Vercel). The schema and queries are plain SQLite, just over the wire.
+ *  - **SQLite** (`better-sqlite3`, WAL + busy_timeout) otherwise — the local /
+ *    persistent-disk default.
  *
- * Server-only: this module loads the native `better-sqlite3` binary and must
- * never be imported by a client component. It is marked external in
- * `next.config.ts` (`serverExternalPackages`).
+ * Both expose the same async API. SQLite is synchronous under the hood; the
+ * promises resolve immediately, so callers can `await` uniformly regardless of
+ * which backend is active. All access is parameterized (bound args, never
+ * concatenated), closing the SQL-injection surface (TC-SEC-001).
+ *
+ * Server-only: this module loads a native binary (`better-sqlite3`) and reads
+ * the Turso credentials, so it must never be imported by a client component.
+ * `better-sqlite3` is marked external in `next.config.ts`; both backends are
+ * dynamically imported so only the one in use is ever loaded.
  */
 
-import { mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import Database from 'better-sqlite3';
+import { join } from 'node:path';
 import type { LogoConcept, LogoParams } from './types';
 
 const DEFAULT_DB_PATH = join(process.cwd(), 'storage', 'gallery.db');
+
+/** True when the Turso credentials are present and the cloud DB should be used. */
+function tursoEnabled(): boolean {
+  return Boolean(
+    process.env.TURSO_AUTH_TOKEN?.trim() && process.env.TURSO_DATABASE_URL?.trim(),
+  );
+}
 
 /** Resolve the SQLite file path from env, defaulting to ./storage/gallery.db. */
 function databasePath(): string {
   return process.env.DATABASE_PATH?.trim() || DEFAULT_DB_PATH;
 }
 
-/** Row shape as stored on disk; `params` is serialized JSON. */
+/** Row shape as stored; `params` is serialized JSON. */
 interface GalleryRow {
   id: string;
   prompt: string;
@@ -36,14 +48,100 @@ interface GalleryRow {
   params: string | null;
 }
 
-let db: Database.Database | null = null;
+const CREATE_TABLE = `
+  CREATE TABLE IF NOT EXISTS gallery (
+    id             TEXT PRIMARY KEY,
+    prompt         TEXT NOT NULL,
+    image_filename TEXT NOT NULL,
+    image_url      TEXT NOT NULL,
+    content_type   TEXT NOT NULL,
+    model          TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    params         TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_gallery_created_at
+    ON gallery (created_at DESC);
+`;
 
-/**
- * Lazily open (and migrate) the database, caching the connection for the life
- * of the process. WAL + busy_timeout are set on first open.
- */
-function getDb(): Database.Database {
-  if (db) return db;
+const INSERT_SQL = `
+  INSERT INTO gallery
+    (id, prompt, image_filename, image_url, content_type, model, created_at, params)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`;
+const COUNT_SQL = 'SELECT COUNT(*) AS n FROM gallery';
+const LIST_SQL =
+  'SELECT * FROM gallery ORDER BY created_at DESC LIMIT ? OFFSET ?';
+const GET_SQL = 'SELECT * FROM gallery WHERE id = ?';
+
+/** Ordered bind args for an insert, matching INSERT_SQL's `?` placeholders. */
+function insertArgs(c: LogoConcept): (string | null)[] {
+  return [
+    c.id,
+    c.prompt,
+    c.imageFilename,
+    c.imageUrl,
+    c.contentType,
+    c.model,
+    c.createdAt,
+    c.params ? JSON.stringify(c.params) : null,
+  ];
+}
+
+/** Common backend surface; the two implementations resolve to this. */
+interface DbBackend {
+  insert(concept: LogoConcept): Promise<void>;
+  count(): Promise<number>;
+  list(limit: number, offset: number): Promise<GalleryRow[]>;
+  get(id: string): Promise<GalleryRow | null>;
+}
+
+let backendPromise: Promise<DbBackend> | null = null;
+
+/** Lazily build (and cache) the active backend for the life of the process. */
+function getBackend(): Promise<DbBackend> {
+  if (!backendPromise) {
+    backendPromise = (tursoEnabled() ? createTursoBackend() : createSqliteBackend()).catch(
+      (err) => {
+        // Don't cache a failed init — let the next call retry.
+        backendPromise = null;
+        throw err;
+      },
+    );
+  }
+  return backendPromise;
+}
+
+async function createTursoBackend(): Promise<DbBackend> {
+  const { createClient } = await import('@libsql/client');
+  const client = createClient({
+    url: process.env.TURSO_DATABASE_URL!.trim(),
+    authToken: process.env.TURSO_AUTH_TOKEN!.trim(),
+  });
+  await client.executeMultiple(CREATE_TABLE);
+
+  return {
+    async insert(concept) {
+      await client.execute({ sql: INSERT_SQL, args: insertArgs(concept) });
+    },
+    async count() {
+      const res = await client.execute(COUNT_SQL);
+      return Number((res.rows[0] as unknown as { n: number }).n);
+    },
+    async list(limit, offset) {
+      const res = await client.execute({ sql: LIST_SQL, args: [limit, offset] });
+      return res.rows as unknown as GalleryRow[];
+    },
+    async get(id) {
+      const res = await client.execute({ sql: GET_SQL, args: [id] });
+      return (res.rows[0] as unknown as GalleryRow) ?? null;
+    },
+  };
+}
+
+async function createSqliteBackend(): Promise<DbBackend> {
+  const { mkdirSync } = await import('node:fs');
+  const { dirname } = await import('node:path');
+  const { default: Database } = await import('better-sqlite3');
 
   const path = databasePath();
   mkdirSync(dirname(path), { recursive: true });
@@ -52,24 +150,27 @@ function getDb(): Database.Database {
   connection.pragma('journal_mode = WAL');
   connection.pragma('busy_timeout = 5000');
   connection.pragma('foreign_keys = ON');
+  connection.exec(CREATE_TABLE);
 
-  connection.exec(`
-    CREATE TABLE IF NOT EXISTS gallery (
-      id             TEXT PRIMARY KEY,
-      prompt         TEXT NOT NULL,
-      image_filename TEXT NOT NULL,
-      image_url      TEXT NOT NULL,
-      content_type   TEXT NOT NULL,
-      model          TEXT NOT NULL,
-      created_at     TEXT NOT NULL,
-      params         TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_gallery_created_at
-      ON gallery (created_at DESC);
-  `);
+  const insertStmt = connection.prepare(INSERT_SQL);
+  const countStmt = connection.prepare(COUNT_SQL);
+  const listStmt = connection.prepare(LIST_SQL);
+  const getStmt = connection.prepare(GET_SQL);
 
-  db = connection;
-  return db;
+  return {
+    async insert(concept) {
+      insertStmt.run(insertArgs(concept));
+    },
+    async count() {
+      return (countStmt.get() as { n: number }).n;
+    },
+    async list(limit, offset) {
+      return listStmt.all(limit, offset) as GalleryRow[];
+    },
+    async get(id) {
+      return (getStmt.get(id) as GalleryRow | undefined) ?? null;
+    },
+  };
 }
 
 function rowToConcept(row: GalleryRow): LogoConcept {
@@ -86,48 +187,24 @@ function rowToConcept(row: GalleryRow): LogoConcept {
 }
 
 /** Insert a saved logo record. Returns the stored concept. */
-export function insertConcept(concept: LogoConcept): LogoConcept {
-  const stmt = getDb().prepare(`
-    INSERT INTO gallery
-      (id, prompt, image_filename, image_url, content_type, model, created_at, params)
-    VALUES
-      (@id, @prompt, @image_filename, @image_url, @content_type, @model, @created_at, @params)
-  `);
-  stmt.run({
-    id: concept.id,
-    prompt: concept.prompt,
-    image_filename: concept.imageFilename,
-    image_url: concept.imageUrl,
-    content_type: concept.contentType,
-    model: concept.model,
-    created_at: concept.createdAt,
-    params: concept.params ? JSON.stringify(concept.params) : null,
-  });
+export async function insertConcept(concept: LogoConcept): Promise<LogoConcept> {
+  await (await getBackend()).insert(concept);
   return concept;
 }
 
 /** Total number of saved records (for pagination). */
-export function countConcepts(): number {
-  const row = getDb().prepare('SELECT COUNT(*) AS n FROM gallery').get() as {
-    n: number;
-  };
-  return row.n;
+export async function countConcepts(): Promise<number> {
+  return (await getBackend()).count();
 }
 
 /** List saved records newest-first, paginated. */
-export function listConcepts(limit = 24, offset = 0): LogoConcept[] {
-  const rows = getDb()
-    .prepare(
-      'SELECT * FROM gallery ORDER BY created_at DESC LIMIT @limit OFFSET @offset',
-    )
-    .all({ limit, offset }) as GalleryRow[];
+export async function listConcepts(limit = 24, offset = 0): Promise<LogoConcept[]> {
+  const rows = await (await getBackend()).list(limit, offset);
   return rows.map(rowToConcept);
 }
 
 /** Fetch a single record by id, or null if absent. */
-export function getConcept(id: string): LogoConcept | null {
-  const row = getDb()
-    .prepare('SELECT * FROM gallery WHERE id = @id')
-    .get({ id }) as GalleryRow | undefined;
+export async function getConcept(id: string): Promise<LogoConcept | null> {
+  const row = await (await getBackend()).get(id);
   return row ? rowToConcept(row) : null;
 }
