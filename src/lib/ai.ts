@@ -1,67 +1,100 @@
 /**
- * Mistral image-generation service (tech-stack.md §5, architecture.md §4).
+ * Image-generation service (tech-stack.md §5, architecture.md §4).
  *
- * Mistral has no plain image endpoint — image generation runs through the
- * Agents API with the `image_generation` tool (FLUX1.1 [pro] Ultra under the
- * hood, agent model `mistral-medium-latest`). The flow:
- *   1. Ensure an agent with the `image_generation` tool exists — created once
- *      per process and cached, or reused via `MISTRAL_AGENT_ID`.
- *   2. POST a conversation with the prompt; the response carries a `tool_file`
- *      chunk with a `file_id`.
- *   3. Download the bytes from the files endpoint.
+ * The whole image provider sits behind this one module, so routes and UI never
+ * change when the provider does. Two providers are supported, each with a pool
+ * of API keys for free-tier fallback:
  *
- * The whole provider sits behind this one module, so a different image model can
- * be swapped in without touching routes or UI. All failures surface as typed
- * {@link ApiException}s (`TIMEOUT` / `NO_IMAGE` / `UPSTREAM_ERROR`) that routes
- * map to retryable error states.
+ *   - **mistral** — Mistral has no plain image endpoint, so generation runs
+ *     through the Agents API with the `image_generation` tool (FLUX1.1 [pro]
+ *     Ultra under the hood, agent model `mistral-medium-latest`): ensure an
+ *     agent (created once per key and cached, or reused via `MISTRAL_AGENT_ID`),
+ *     POST a conversation, then download the `file_id` bytes.
+ *   - **pixazo** — FLUX.1 Schnell via the pixazo gateway: a single synchronous
+ *     POST returns `{ output: <url> }`; we fetch the bytes from that URL.
  *
- * Server-only: reads `MISTRAL_API_KEY` and must never be imported by a client
+ * `IMAGE_PROVIDER` is an ordered, comma-separated list of providers to try
+ * (default `mistral`). For each prompt, {@link generateImage} walks every
+ * provider in order and every key within it, returning the first success — so a
+ * rate-limited free-tier key (429) simply rolls over to the next key/provider.
+ * All failures surface as typed {@link ApiException}s (`TIMEOUT` / `NO_IMAGE` /
+ * `UPSTREAM_ERROR`) that routes map to retryable error states.
+ *
+ * Server-only: reads provider API keys and must never be imported by a client
  * component.
  */
 
 import { ApiException } from './http';
 
-const API_BASE = 'https://api.mistral.ai/v1';
-export const AGENT_MODEL = 'mistral-medium-latest';
+const MISTRAL_BASE = 'https://api.mistral.ai/v1';
+const PIXAZO_SCHNELL_URL = 'https://gateway.pixazo.ai/flux-1-schnell/v1/getData';
+export const MISTRAL_MODEL = 'mistral-medium-latest';
+export const PIXAZO_MODEL = 'flux-1-schnell';
 const DEFAULT_TIMEOUT_MS = 60_000;
 
-function apiKey(): string | undefined {
-  return process.env.MISTRAL_API_KEY?.trim() || undefined;
+type Provider = 'mistral' | 'pixazo';
+const KNOWN_PROVIDERS: readonly Provider[] = ['mistral', 'pixazo'];
+
+/** Split a comma/whitespace-separated env value into trimmed, non-empty parts. */
+function splitList(raw: string | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
-/** Whether the provider key is configured (used by /api/health). */
-export function isConfigured(): boolean {
-  return Boolean(apiKey());
+/** Order-preserving de-dup. */
+function dedupe(items: string[]): string[] {
+  return [...new Set(items)];
 }
 
-function requireKey(): string {
-  const key = apiKey();
-  if (!key) {
-    // Generic to the client; the real reason is logged by toErrorResponse.
-    throw new ApiException('INTERNAL', {
-      message: 'MISTRAL_API_KEY is not configured',
-    });
+/** Keys for a provider: the single-key var first, then the list var, de-duped. */
+function keysFor(provider: Provider): string[] {
+  if (provider === 'mistral') {
+    return dedupe([
+      ...splitList(process.env.MISTRAL_API_KEY),
+      ...splitList(process.env.MISTRAL_API_KEYS),
+    ]);
   }
-  return key;
+  return dedupe([
+    ...splitList(process.env.PIXAZO_API_KEY),
+    ...splitList(process.env.PIXAZO_API_KEYS),
+  ]);
+}
+
+/** Ordered list of providers to try, from `IMAGE_PROVIDER` (default mistral). */
+function providerOrder(): Provider[] {
+  const raw = splitList(process.env.IMAGE_PROVIDER);
+  const order = (raw.length ? raw : ['mistral']).filter((p): p is Provider =>
+    (KNOWN_PROVIDERS as readonly string[]).includes(p),
+  );
+  return order.length ? order : ['mistral'];
+}
+
+/** All (provider, key) attempts in fallback order. */
+function attemptChain(): { provider: Provider; key: string }[] {
+  const chain: { provider: Provider; key: string }[] = [];
+  for (const provider of providerOrder()) {
+    for (const key of keysFor(provider)) chain.push({ provider, key });
+  }
+  return chain;
+}
+
+/** Whether at least one provider in the order has a key configured. */
+export function isConfigured(): boolean {
+  return attemptChain().length > 0;
 }
 
 /** fetch with an abort-based timeout; maps abort → TIMEOUT, network → UPSTREAM. */
-async function apiFetch(
-  path: string,
+async function timedFetch(
+  url: string,
   init: RequestInit,
   timeoutMs: number,
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(`${API_BASE}${path}`, {
-      ...init,
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${requireKey()}`,
-        ...init.headers,
-      },
-    });
+    return await fetch(url, { ...init, signal: controller.signal });
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === 'AbortError') {
       throw new ApiException('TIMEOUT', { cause });
@@ -80,18 +113,23 @@ async function readErrorBody(res: Response): Promise<string> {
   }
 }
 
-// --- Agent lifecycle (created once, cached, deduped across concurrent calls) ---
+export interface GeneratedImage {
+  bytes: Uint8Array;
+  model: string;
+}
 
-let agentPromise: Promise<string> | null = null;
+// --- Mistral: agent lifecycle (created once per key, cached, deduped) ---
 
-async function createAgent(timeoutMs: number): Promise<string> {
-  const res = await apiFetch(
-    '/agents',
+const agentByKey = new Map<string, Promise<string>>();
+
+async function createAgent(key: string, timeoutMs: number): Promise<string> {
+  const res = await timedFetch(
+    `${MISTRAL_BASE}/agents`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: AGENT_MODEL,
+        model: MISTRAL_MODEL,
         name: 'logo-generator',
         description: 'Generates logo concepts for the AI Logo Generator.',
         instructions:
@@ -116,18 +154,20 @@ async function createAgent(timeoutMs: number): Promise<string> {
   return data.id;
 }
 
-/** Resolve the agent id: env override, else create-and-cache once per process. */
-async function ensureAgent(timeoutMs: number): Promise<string> {
+/** Resolve the agent id for a key: env override, else create-and-cache once. */
+async function ensureAgent(key: string, timeoutMs: number): Promise<string> {
   const fromEnv = process.env.MISTRAL_AGENT_ID?.trim();
   if (fromEnv) return fromEnv;
 
-  if (!agentPromise) {
-    agentPromise = createAgent(timeoutMs).catch((err) => {
-      agentPromise = null; // allow retry on next call
+  let promise = agentByKey.get(key);
+  if (!promise) {
+    promise = createAgent(key, timeoutMs).catch((err) => {
+      agentByKey.delete(key); // allow retry on next call
       throw err;
     });
+    agentByKey.set(key, promise);
   }
-  return agentPromise;
+  return promise;
 }
 
 // --- Response parsing: find the generated file id among conversation outputs ---
@@ -154,29 +194,18 @@ function extractFileId(payload: unknown): string | null {
   return null;
 }
 
-export interface GeneratedImage {
-  bytes: Uint8Array;
-  model: string;
-}
-
-/**
- * Generate a single logo image from a fully-constructed prompt.
- *
- * @throws {ApiException} TIMEOUT (slow upstream), NO_IMAGE (model returned no
- *   file, e.g. a content refusal), or UPSTREAM_ERROR (non-2xx / network).
- */
-export async function generateImage(
+async function generateImageMistral(
   prompt: string,
-  opts: { timeoutMs?: number } = {},
+  key: string,
+  timeoutMs: number,
 ): Promise<GeneratedImage> {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const agentId = await ensureAgent(timeoutMs);
+  const agentId = await ensureAgent(key, timeoutMs);
 
-  const convRes = await apiFetch(
-    '/conversations',
+  const convRes = await timedFetch(
+    `${MISTRAL_BASE}/conversations`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent_id: agentId, inputs: prompt }),
     },
     timeoutMs,
@@ -194,9 +223,9 @@ export async function generateImage(
     throw new ApiException('NO_IMAGE', { message: 'model returned no image' });
   }
 
-  const fileRes = await apiFetch(
-    `/files/${encodeURIComponent(fileId)}/content`,
-    { method: 'GET' },
+  const fileRes = await timedFetch(
+    `${MISTRAL_BASE}/files/${encodeURIComponent(fileId)}/content`,
+    { method: 'GET', headers: { Authorization: `Bearer ${key}` } },
     timeoutMs,
   );
   if (!fileRes.ok) {
@@ -210,5 +239,100 @@ export async function generateImage(
   if (bytes.length === 0) {
     throw new ApiException('NO_IMAGE', { message: 'downloaded image was empty' });
   }
-  return { bytes, model: AGENT_MODEL };
+  return { bytes, model: MISTRAL_MODEL };
+}
+
+// --- Pixazo: FLUX.1 Schnell, synchronous { output: url } then fetch bytes ---
+
+async function generateImagePixazo(
+  prompt: string,
+  key: string,
+  timeoutMs: number,
+): Promise<GeneratedImage> {
+  const res = await timedFetch(
+    PIXAZO_SCHNELL_URL,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache',
+        'Ocp-Apim-Subscription-Key': key,
+      },
+      body: JSON.stringify({ prompt, num_steps: 4, width: 1024, height: 1024 }),
+    },
+    timeoutMs,
+  );
+
+  if (!res.ok) {
+    console.error('[ai] pixazo generate failed', res.status, await readErrorBody(res));
+    throw new ApiException('UPSTREAM_ERROR', {
+      message: `generation failed (${res.status})`,
+    });
+  }
+
+  const data = (await res.json().catch(() => null)) as { output?: unknown } | null;
+  const url = data?.output;
+  if (typeof url !== 'string' || !url) {
+    throw new ApiException('NO_IMAGE', { message: 'pixazo returned no image url' });
+  }
+
+  const imgRes = await timedFetch(url, { method: 'GET' }, timeoutMs);
+  if (!imgRes.ok) {
+    console.error('[ai] pixazo download failed', imgRes.status);
+    throw new ApiException('UPSTREAM_ERROR', {
+      message: `image download failed (${imgRes.status})`,
+    });
+  }
+
+  const bytes = new Uint8Array(await imgRes.arrayBuffer());
+  if (bytes.length === 0) {
+    throw new ApiException('NO_IMAGE', { message: 'downloaded image was empty' });
+  }
+  return { bytes, model: PIXAZO_MODEL };
+}
+
+function generateWith(
+  provider: Provider,
+  prompt: string,
+  key: string,
+  timeoutMs: number,
+): Promise<GeneratedImage> {
+  return provider === 'pixazo'
+    ? generateImagePixazo(prompt, key, timeoutMs)
+    : generateImageMistral(prompt, key, timeoutMs);
+}
+
+/**
+ * Generate a single logo image from a fully-constructed prompt, trying each
+ * configured provider/key in {@link providerOrder} order until one succeeds.
+ *
+ * @throws {ApiException} INTERNAL (no provider configured), or the last
+ *   provider failure (TIMEOUT / NO_IMAGE / UPSTREAM_ERROR) once every fallback
+ *   in the chain is exhausted.
+ */
+export async function generateImage(
+  prompt: string,
+  opts: { timeoutMs?: number } = {},
+): Promise<GeneratedImage> {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const chain = attemptChain();
+  if (chain.length === 0) {
+    throw new ApiException('INTERNAL', { message: 'no image provider configured' });
+  }
+
+  let lastError: unknown;
+  for (let i = 0; i < chain.length; i++) {
+    const { provider, key } = chain[i];
+    try {
+      return await generateWith(provider, prompt, key, timeoutMs);
+    } catch (err) {
+      lastError = err;
+      // Fall through to the next key/provider; a free-tier 429 on one account
+      // should roll over rather than fail the whole image.
+    }
+  }
+
+  throw lastError instanceof ApiException
+    ? lastError
+    : new ApiException('UPSTREAM_ERROR', { cause: lastError });
 }
