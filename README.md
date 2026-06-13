@@ -13,6 +13,8 @@ any saved logo, tweak the prompt, and re-generate without starting over.
   platform like Vercel. All four options are persistent.
 - Built to stay correct under **concurrent users** and to handle the three
   failure states (invalid prompt, API timeout, broken response) visibly.
+- Optional **Cloudflare Turnstile** bot protection in front of the generate and
+  refine endpoints — enforced server-side, and only when a secret key is set.
 
 > Full design docs are in [`docs/`](./docs) — start with
 > [`product-requirements.md`](./docs/product-requirements.md),
@@ -84,6 +86,15 @@ half to its cloud backend — needed on a diskless host like Vercel:
 | `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` | **Turso** (libSQL) for gallery records | Both must be set. Create a DB at <https://turso.tech/>. |
 | `BLOB_STORE_ID` + `BLOB_READ_WRITE_TOKEN` | **Vercel Blob** for image bytes | Both must be set. Injected automatically when you attach a Blob store on Vercel. |
 
+**Bot protection (optional, Cloudflare Turnstile).** Put a bot challenge in front
+of `POST /api/generate` and `POST /api/refine`. Verification is **opt-in**: it
+runs only when `TURNSTILE_SECRET_KEY` is set, so the app works without it.
+
+| Variable | Description |
+| --- | --- |
+| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Public site key rendered in the browser (not a secret). Optional — defaults to the project's configured key. Inlined at **build** time, so changing it needs a rebuild. |
+| `TURNSTILE_SECRET_KEY` | Server-only secret from the same widget. **Required to actually enforce** the check. Cloudflare's always-passing test secret is `1x0000000000000000000000000000000AA` (pair with site key `1x00000000000000000000AA`). |
+
 ### 4. Start the dev server
 
 ```bash
@@ -113,6 +124,7 @@ If `aiKeyConfigured` is `false`, your key isn't being read — recheck
 | `npm run build` | Production build. |
 | `npm run start` | Serve the production build (one process serves UI + API). |
 | `npm run lint` | Run ESLint. |
+| `npm test` | Run the vitest suite (provider/key fallback + Turnstile verification; mocked fetch, no real API calls). |
 
 ---
 
@@ -132,6 +144,11 @@ own backend.
 
 Errors use a uniform `{ error, code }` shape. Codes: `INVALID_REQUEST`,
 `INVALID_PROMPT`, `TIMEOUT`, `NO_IMAGE`, `UPSTREAM_ERROR`, `INTERNAL`.
+
+When `TURNSTILE_SECRET_KEY` is set, `POST /api/generate` and `POST /api/refine`
+require a valid Cloudflare Turnstile token in the request body (`turnstileToken`);
+a missing or failed token returns `INVALID_REQUEST`. The UI sends this token
+automatically via the on-page widget.
 
 ---
 
@@ -188,6 +205,11 @@ backends against a mounted volume:
 3. `npm run build && npm run start`.
 
 `/api/health` doubles as a readiness probe.
+
+> **Bot protection in production.** To enforce the Turnstile check, set
+> `TURNSTILE_SECRET_KEY` (and, if not using the default, `NEXT_PUBLIC_TURNSTILE_SITE_KEY`)
+> on the host, and add the deployed domain to the widget's allowed hostnames in
+> the Cloudflare dashboard. Left unset, the app runs unprotected.
 
 ---
 

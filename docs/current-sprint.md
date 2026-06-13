@@ -287,6 +287,25 @@ the multi-key rollover is `npm test` (free, no quota) instead of a manual QA pas
   key in env); rotation/rollover is covered by mocked-fetch tests, not a real
   multi-key burst.
 
+- **Cloudflare Turnstile bot protection (opt-in)** ✅ 2026-06-13
+  **Beyond documented MVP scope** (user-requested; not in PRD/acceptance-criteria).
+  New server-only `lib/turnstile.ts` (`verifyTurnstile`/`isTurnstileEnabled`/
+  `clientIp`) guards `POST /api/generate` + `POST /api/refine` before any AI work;
+  new client `TurnstileWidget.tsx` (next/script loader + explicit render +
+  imperative `reset()`), wired via `LogoStudio` so one shared widget feeds both
+  flows — the one-time `turnstileToken` is sent per request and reset afterwards.
+  **Enforcement is opt-in:** verified only when `TURNSTILE_SECRET_KEY` is set,
+  else skipped with a one-time warn (local dev / key-less deploys unaffected).
+  Site key is public (`NEXT_PUBLIC_TURNSTILE_SITE_KEY`, given key baked as
+  default); secret is server-only and lives in gitignored `.env.local`. A
+  failed/missing token reuses the existing `INVALID_REQUEST` retryable state (no
+  new error code). Client is non-blocking (buttons not gated on token) so a
+  widget that fails to load can't brick the app; the server is the gate. New
+  `turnstile.test.ts` (9 cases, mocked fetch) → 26 tests total. lint + tsc +
+  build + `npm test` clean. The provided secret key is configured in `.env.local`,
+  so enforcement is live locally; **not yet exercised end-to-end in a browser**
+  (the widget needs the deploy/localhost domain allowed in the Cloudflare widget).
+
 ## Blockers
 
 None

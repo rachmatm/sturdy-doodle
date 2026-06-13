@@ -4,6 +4,7 @@ import { insertConcept } from '@/lib/db';
 import { ApiException, jsonError, jsonOk, parseJsonBody, toErrorResponse } from '@/lib/http';
 import { buildConceptPrompts, validateBrief } from '@/lib/prompt';
 import { saveImage } from '@/lib/storage';
+import { clientIp, verifyTurnstile } from '@/lib/turnstile';
 import type { GenerateRequest, GenerateResponse, LogoBrief, LogoConcept } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -56,6 +57,9 @@ async function generateOne(prompt: string, brief: LogoBrief): Promise<LogoConcep
 export async function POST(req: Request) {
   try {
     const body = await parseJsonBody<GenerateRequest>(req);
+
+    // Bot check (no-op unless TURNSTILE_SECRET_KEY is set) before any AI work.
+    await verifyTurnstile(body?.turnstileToken, clientIp(req));
 
     const validation = validateBrief(body?.brief);
     if (!validation.ok) {

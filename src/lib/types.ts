@@ -129,6 +129,8 @@ export interface LogoParams {
 
 export interface GenerateRequest {
   brief: LogoBrief;
+  /** Cloudflare Turnstile token; verified server-side when enforcement is on. */
+  turnstileToken?: string;
 }
 
 export interface GenerateResponse {
@@ -140,6 +142,8 @@ export interface RefineRequest {
   conceptId: string;
   directive?: RefinementDirective;
   change?: RefinementChange;
+  /** Cloudflare Turnstile token; verified server-side when enforcement is on. */
+  turnstileToken?: string;
 }
 
 export interface RefineResponse {

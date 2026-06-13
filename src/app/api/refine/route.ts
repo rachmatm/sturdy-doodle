@@ -4,6 +4,7 @@ import { getConcept, insertConcept } from '@/lib/db';
 import { ApiException, jsonError, jsonOk, parseJsonBody, toErrorResponse } from '@/lib/http';
 import { buildRefinePrompt } from '@/lib/prompt';
 import { saveImage } from '@/lib/storage';
+import { clientIp, verifyTurnstile } from '@/lib/turnstile';
 import {
   REFINEMENT_CHANGE_TARGETS,
   REFINEMENT_DIRECTIVES,
@@ -96,6 +97,9 @@ async function refineOne(
 export async function POST(req: Request) {
   try {
     const body = await parseJsonBody<RefineRequest>(req);
+
+    // Bot check (no-op unless TURNSTILE_SECRET_KEY is set) before any AI work.
+    await verifyTurnstile(body?.turnstileToken, clientIp(req));
 
     const conceptId = typeof body?.conceptId === 'string' ? body.conceptId.trim() : '';
     if (!conceptId) {
