@@ -20,7 +20,7 @@ import {
  */
 
 const SITE_KEY =
-  process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? '0x4AAAAAADkCsknbecTlFrXT';
+  process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim();
 
 /** Minimal typings for the slice of the Turnstile JS API we use. */
 interface TurnstileApi {
