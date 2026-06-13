@@ -59,7 +59,7 @@ IDs (the map below already has them).
 
 ## Card map (Seq ↔ Notion page ID)
 
-_Last synced: 2026-06-11._
+_Last synced: 2026-06-12._
 
 | Seq | Name | Area | Pri | Notion page ID | Last-synced Status |
 | --- | --- | --- | --- | --- | --- |
@@ -89,8 +89,10 @@ _Last synced: 2026-06-11._
 | 24 | `ErrorBanner` + 3 retryable states | Frontend | P0 | `37b028ef-f0ee-8170-b5a8-f1661503b180` | Done |
 | 25 | Mobile-responsive pass | Frontend | P1 | `37b028ef-f0ee-81e6-af52-da8acbf255f2` | Done |
 | 26 | Concurrency stress-test script | QA | P0 | `37b028ef-f0ee-8114-a00e-ff6ecc43c83e` | To Do |
-| 27 | Validation + failure-state test cases | QA | P0 | `37b028ef-f0ee-8107-9480-e1b8b88280fd` | Review |
-| 28 | Security checks | QA | P0 | `37b028ef-f0ee-81e6-b6db-c24b6f8a0be6` | To Do |
+| 27 | Validation + failure-state test cases | QA | P0 | `37b028ef-f0ee-8107-9480-e1b8b88280fd` | Done |
+| 28 | Security checks | QA | P0 | `37b028ef-f0ee-81e6-b6db-c24b6f8a0be6` | Done |
 | 29 | README + finalize docs | Docs | P0 | `37b028ef-f0ee-8187-bf4d-cdaa334ff0af` | Done |
 | 30 | Deploy to persistent-disk host + live URL | Setup | P1 | `37c028ef-f0ee-81d6-80e5-ee975232cb38` | To Do |
-| 31 | In-browser QA pass (full loop + responsiveness) | QA | P1 | `37c028ef-f0ee-81fa-90b9-f03d2ddf86b7` | To Do |
+| 31 | In-browser QA pass (full loop + responsiveness) | QA | P1 | `37c028ef-f0ee-81fa-90b9-f03d2ddf86b7` | Done |
+| 32 | Multi-provider image fallback (pixazo + per-key rollover) | AI | P1 | `37d028ef-f0ee-8165-ac14-e54bcdedca58` | Done |
+| 33 | Automated fallback tests (vitest) | QA | P2 | `37d028ef-f0ee-8107-8f5b-f550011a3c86` | Done |
