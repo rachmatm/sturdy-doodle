@@ -59,6 +59,16 @@ Single Next.js 16 fullstack app. Wizard (React 19) → same-origin API routes �
   never break generation. Avoids piling up duplicate agents on the account.
 - Save **every** generated concept (not just favorites) — that is what makes the gallery durable.
 - PNG download only; SVG/favicon are future, not faked (the model returns raster).
+- **Bot protection (Cloudflare Turnstile, opt-in):** `lib/turnstile.ts`
+  (`verifyTurnstile`/`isTurnstileEnabled`/`clientIp`, server-only) guards
+  `POST /api/generate` + `POST /api/refine`; the client widget
+  (`TurnstileWidget.tsx`, wired via `LogoStudio`) supplies a one-time
+  `turnstileToken` per request (reset after each submit). **Enforced only when
+  `TURNSTILE_SECRET_KEY` is set** (else skipped with a one-time warn). Site key is
+  public (`NEXT_PUBLIC_TURNSTILE_SITE_KEY`, baked default); secret is server-only
+  and lives in gitignored `.env.local` — never commit it. Failed/missing token →
+  `INVALID_REQUEST` (retryable). Beyond the documented MVP scope; see decision-log
+  2026-06-13.
 - No accounts — one shared anonymous gallery (enough to prove persistence + concurrency).
 - Build order is risk-first / contract-first: backend correctness before UI.
 

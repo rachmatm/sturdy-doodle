@@ -16,7 +16,7 @@ _Last updated: 2026-06-13_
 | API routes | ✅ Complete (6 of 6) |
 | Frontend (wizard + gallery) | ✅ Complete (in-browser QA passed 2026-06-12) |
 | QA (security, validation, UI loop) | ✅ Passed in-browser 2026-06-12; ⬜ concurrency-under-load left |
-| Automated tests | ✅ `src/lib/ai.test.ts` — provider×key fallback + round-robin rotation + agent reuse/persistence (17 tests, vitest, `npm test`) |
+| Automated tests | ✅ `src/lib/ai.test.ts` (provider×key fallback + round-robin + agent reuse) + `src/lib/turnstile.test.ts` (Turnstile verification) — 26 tests, vitest, `npm test` |
 | Deploy / live URL | ⬜ Not started |
 
 Overall: **backend complete (all 6 routes); frontend complete and verified in a
@@ -40,19 +40,21 @@ simultaneous load.**
 - `ai.ts` — multi-provider image service behind one `generateImage()`: **mistral** (Agents API) and **pixazo** (FLUX.1 Schnell, sync `{output:url}`). `IMAGE_PROVIDER` is an ordered list; each provider has a key pool (`*_API_KEY` + `*_API_KEYS`); `generateImage()` walks provider×key in order, returning the first success so a free-tier `429` rolls over. `IMAGE_KEY_STRATEGY` selects the per-request ordering: `fallback` (default, strict priority) or `round-robin`, which advances the starting provider **and** key per request (per-process counter) so a fan-out burst spreads across providers/keys instead of hammering one key — full rollover preserved either way. Mistral agent resolution (`ensureAgent`): env `MISTRAL_AGENT_ID` → per-process cache → **DB-persisted id verified live via `GET /v1/agents`** → create + persist (`db.getStoredAgentId`/`saveAgentId`, `mistral_agents` table keyed by a SHA-256 key fingerprint), so a process restart reuses one agent instead of creating duplicates; DB I/O is best-effort. Timeouts → `TIMEOUT`/`NO_IMAGE`/`UPSTREAM_ERROR`; `isConfigured()`.
 - `prompt.ts` — brief validation + brief→prompt construction + refine prompt.
 - `apiClient.ts` — client-safe fetch helper (`ClientApiError` + `requestJson`) preserving the `{error,code}` contract so the UI can branch on the failure code.
+- `turnstile.ts` — **opt-in** Cloudflare Turnstile bot verification (`verifyTurnstile`/`isTurnstileEnabled`/`clientIp`, server-only). Guards `/api/generate` + `/api/refine` before any AI work. Enforced only when `TURNSTILE_SECRET_KEY` is set (else skipped with a one-time warn); a failed/missing token → `INVALID_REQUEST` (retryable). Site key is public (`NEXT_PUBLIC_TURNSTILE_SITE_KEY`); secret is server-only.
 
 **API routes (`src/app/api/`)**
 
 - `GET /api/health` — liveness + `aiKeyConfigured`.
-- `POST /api/generate` — full pipeline (validate → generate → store → record), partial-success tolerant.
+- `POST /api/generate` — full pipeline (validate → generate → store → record), partial-success tolerant. Guarded by Turnstile (opt-in) before any AI work.
 - `GET /api/images/[filename]` — serve stored bytes safely.
 - `GET /api/gallery` — paginated persisted listing (`concepts`/`total`/`nextOffset`), newest-first, `force-dynamic`. **Verified live** (empty-state, pagination cursor, ordering, 400 on bad params).
-- `POST /api/refine` — re-generate from a saved concept: load → validate tweak → `buildRefinePrompt` → 4 variations saved with `refinedFrom`; original untouched, partial-success tolerant. **Verified live** (all validation/error paths + typed upstream failure).
+- `POST /api/refine` — re-generate from a saved concept: load → validate tweak → `buildRefinePrompt` → 4 variations saved with `refinedFrom`; original untouched, partial-success tolerant. Guarded by Turnstile (opt-in) before any AI work. **Verified live** (all validation/error paths + typed upstream failure).
 - `GET /api/download` — export a saved logo by `id` as a PNG attachment (`Content-Disposition`, friendly slugged filename, magic-byte extension); premium formats rejected, not faked. **Verified live** (missing/unknown id, premium-format rejection, happy-path attachment + valid PNG bytes).
 
 **Frontend (`src/components/`, `src/app/`)**
 
-- `LogoStudio.tsx` — client host (architecture §3): owns the gallery + generating + **selection** state, fetches the gallery on mount + paginates (via `requestJson`), wires the wizard's `onSubmit` → `POST /api/generate` and the refine toolbar → `POST /api/refine` (shared busy flag, `GeneratingCard`, and **prepend** — newest first), and renders a retryable `ErrorBanner` keyed on the typed code (retry replays the last action via a `LastAction` data union) with the gallery left untouched on failure (C5).
+- `LogoStudio.tsx` — client host (architecture §3): owns the gallery + generating + **selection** state, fetches the gallery on mount + paginates (via `requestJson`), wires the wizard's `onSubmit` → `POST /api/generate` and the refine toolbar → `POST /api/refine` (shared busy flag, `GeneratingCard`, and **prepend** — newest first), and renders a retryable `ErrorBanner` keyed on the typed code (retry replays the last action via a `LastAction` data union) with the gallery left untouched on failure (C5). Also hosts the shared `TurnstileWidget` and threads its one-time token into both generate + refine, resetting after each submit.
+- `TurnstileWidget.tsx` — Cloudflare Turnstile challenge (`'use client'`): loads the CF script via `next/script`, explicit-renders the widget, and exposes the token via `onToken` + an imperative `reset()` (tokens are single-use). Non-blocking (the studio buttons are not gated on it); the server is the gate.
 - `Gallery.tsx` — presentational gallery (data via props): loading / retryable-error / empty / grid states with `nextOffset` "Load more" (FR-4 / TC-003).
 - `GeneratingCard.tsx` — meaningful 10–30s loading UI; tells the user the wait is expected (C4 / FR-7).
 - `ErrorBanner.tsx` — retryable failure state keyed on `ErrorCode`; invalid-prompt frames as "fix your brief" (no retry), timeout / no-image / upstream / internal offer retry (C5 / FR-6 / TC-008–009).

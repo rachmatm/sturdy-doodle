@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ClientApiError, requestJson } from '@/lib/apiClient';
 import {
   type GalleryResponse,
@@ -13,6 +13,7 @@ import ErrorBanner from './ErrorBanner';
 import Gallery, { type GalleryStatus } from './Gallery';
 import GeneratingCard from './GeneratingCard';
 import RefineToolbar, { type Refinement } from './RefineToolbar';
+import TurnstileWidget, { type TurnstileHandle } from './TurnstileWidget';
 import Wizard from './Wizard';
 
 /** The last action attempted, stored as data so retry replays it. */
@@ -44,6 +45,16 @@ export default function LogoStudio() {
   const [lastAction, setLastAction] = useState<LastAction | null>(null);
   // The selected concept (feeds download highlighting + the refine toolbar).
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Cloudflare Turnstile token (bot protection). Sent with each submission and
+  // reset afterwards — tokens are single-use. Verified server-side only when
+  // TURNSTILE_SECRET_KEY is configured, so this is inert otherwise.
+  const turnstileToken = useRef<string | null>(null);
+  const turnstileRef = useRef<TurnstileHandle>(null);
+  const resetTurnstile = useCallback(() => {
+    turnstileRef.current?.reset();
+    turnstileToken.current = null;
+  }, []);
 
   // Fetch the first gallery page. No synchronous setState, so it is safe to call
   // straight from the mount effect; the initial `status` is already 'loading'.
@@ -103,15 +114,18 @@ export default function LogoStudio() {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ brief }),
+          body: JSON.stringify({ brief, turnstileToken: turnstileToken.current }),
         },
         'UPSTREAM_ERROR',
       )
         .then((data) => prependConcepts(data.concepts))
         .catch((err: ClientApiError) => setActionError(err))
-        .finally(() => setGenerating(false));
+        .finally(() => {
+          setGenerating(false);
+          resetTurnstile();
+        });
     },
-    [prependConcepts],
+    [prependConcepts, resetTurnstile],
   );
 
   // Re-generate variations from a saved concept (FR-5 / TC-004). The original
@@ -126,15 +140,18 @@ export default function LogoStudio() {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conceptId, ...refinement }),
+          body: JSON.stringify({ conceptId, ...refinement, turnstileToken: turnstileToken.current }),
         },
         'UPSTREAM_ERROR',
       )
         .then((data) => prependConcepts(data.concepts))
         .catch((err: ClientApiError) => setActionError(err))
-        .finally(() => setGenerating(false));
+        .finally(() => {
+          setGenerating(false);
+          resetTurnstile();
+        });
     },
-    [prependConcepts],
+    [prependConcepts, resetTurnstile],
   );
 
   // Retry whichever action last failed, replaying it from stored data.
@@ -159,6 +176,12 @@ export default function LogoStudio() {
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,28rem)_1fr] lg:gap-8">
       <div className="flex flex-col gap-4">
         <Wizard onSubmit={handleSubmit} submitting={generating} />
+        <TurnstileWidget
+          ref={turnstileRef}
+          onToken={(token) => {
+            turnstileToken.current = token;
+          }}
+        />
         {selectedConcept ? (
           <RefineToolbar
             concept={selectedConcept}
