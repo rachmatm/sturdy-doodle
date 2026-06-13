@@ -45,6 +45,12 @@ Single Next.js 16 fullstack app. Wizard (React 19) → same-origin API routes �
   keys for a provider NOT in that ordered list are ignored (incl. by
   `isConfigured()`). A pixazo-only deploy must set `IMAGE_PROVIDER=pixazo`. The
   live config uses `IMAGE_PROVIDER=pixazo,mistral` with 2 keys per pool.
+- **Mistral agent reuse:** the auto-created agent id is persisted in the DB
+  (`mistral_agents` table, keyed by a SHA-256 fingerprint of the key — never the
+  key itself) and reused across restarts, verified each process-start via
+  `GET /v1/agents`. `MISTRAL_AGENT_ID` still overrides everything. DB I/O here is
+  best-effort: failures are logged and fall back to creating an agent, so they
+  never break generation. Avoids piling up duplicate agents on the account.
 - Save **every** generated concept (not just favorites) — that is what makes the gallery durable.
 - PNG download only; SVG/favicon are future, not faked (the model returns raster).
 - No accounts — one shared anonymous gallery (enough to prove persistence + concurrency).

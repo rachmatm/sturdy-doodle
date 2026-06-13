@@ -61,6 +61,13 @@ const CREATE_TABLE = `
   );
   CREATE INDEX IF NOT EXISTS idx_gallery_created_at
     ON gallery (created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS mistral_agents (
+    key_fingerprint TEXT PRIMARY KEY,
+    agent_id        TEXT NOT NULL,
+    model           TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+  );
 `;
 
 const INSERT_SQL = `
@@ -72,6 +79,19 @@ const COUNT_SQL = 'SELECT COUNT(*) AS n FROM gallery';
 const LIST_SQL =
   'SELECT * FROM gallery ORDER BY created_at DESC LIMIT ? OFFSET ?';
 const GET_SQL = 'SELECT * FROM gallery WHERE id = ?';
+
+const AGENT_GET_SQL =
+  'SELECT agent_id FROM mistral_agents WHERE key_fingerprint = ?';
+// Upsert: re-saving a fingerprint (e.g. after the old agent was deleted upstream)
+// overwrites the stale id rather than failing the primary-key constraint.
+const AGENT_UPSERT_SQL = `
+  INSERT INTO mistral_agents (key_fingerprint, agent_id, model, created_at)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(key_fingerprint) DO UPDATE SET
+    agent_id   = excluded.agent_id,
+    model      = excluded.model,
+    created_at = excluded.created_at
+`;
 
 /** Ordered bind args for an insert, matching INSERT_SQL's `?` placeholders. */
 function insertArgs(c: LogoConcept): (string | null)[] {
@@ -93,6 +113,8 @@ interface DbBackend {
   count(): Promise<number>;
   list(limit: number, offset: number): Promise<GalleryRow[]>;
   get(id: string): Promise<GalleryRow | null>;
+  getAgent(keyFingerprint: string): Promise<string | null>;
+  saveAgent(keyFingerprint: string, agentId: string, model: string): Promise<void>;
 }
 
 let backendPromise: Promise<DbBackend> | null = null;
@@ -135,6 +157,17 @@ async function createTursoBackend(): Promise<DbBackend> {
       const res = await client.execute({ sql: GET_SQL, args: [id] });
       return (res.rows[0] as unknown as GalleryRow) ?? null;
     },
+    async getAgent(keyFingerprint) {
+      const res = await client.execute({ sql: AGENT_GET_SQL, args: [keyFingerprint] });
+      const row = res.rows[0] as unknown as { agent_id: string } | undefined;
+      return row?.agent_id ?? null;
+    },
+    async saveAgent(keyFingerprint, agentId, model) {
+      await client.execute({
+        sql: AGENT_UPSERT_SQL,
+        args: [keyFingerprint, agentId, model, new Date().toISOString()],
+      });
+    },
   };
 }
 
@@ -156,6 +189,8 @@ async function createSqliteBackend(): Promise<DbBackend> {
   const countStmt = connection.prepare(COUNT_SQL);
   const listStmt = connection.prepare(LIST_SQL);
   const getStmt = connection.prepare(GET_SQL);
+  const agentGetStmt = connection.prepare(AGENT_GET_SQL);
+  const agentUpsertStmt = connection.prepare(AGENT_UPSERT_SQL);
 
   return {
     async insert(concept) {
@@ -169,6 +204,13 @@ async function createSqliteBackend(): Promise<DbBackend> {
     },
     async get(id) {
       return (getStmt.get(id) as GalleryRow | undefined) ?? null;
+    },
+    async getAgent(keyFingerprint) {
+      const row = agentGetStmt.get(keyFingerprint) as { agent_id: string } | undefined;
+      return row?.agent_id ?? null;
+    },
+    async saveAgent(keyFingerprint, agentId, model) {
+      agentUpsertStmt.run(keyFingerprint, agentId, model, new Date().toISOString());
     },
   };
 }
@@ -207,4 +249,23 @@ export async function listConcepts(limit = 24, offset = 0): Promise<LogoConcept[
 export async function getConcept(id: string): Promise<LogoConcept | null> {
   const row = await (await getBackend()).get(id);
   return row ? rowToConcept(row) : null;
+}
+
+/**
+ * Look up a previously-created Mistral agent id for an API key, addressed by an
+ * opaque fingerprint of that key (never the key itself). Returns null if none is
+ * recorded. Lets the agent survive process restarts so we don't re-create one
+ * per boot (see `ai.ts` `ensureAgent`).
+ */
+export async function getStoredAgentId(keyFingerprint: string): Promise<string | null> {
+  return (await getBackend()).getAgent(keyFingerprint);
+}
+
+/** Persist (upsert) the Mistral agent id for a key fingerprint. */
+export async function saveAgentId(
+  keyFingerprint: string,
+  agentId: string,
+  model: string,
+): Promise<void> {
+  await (await getBackend()).saveAgent(keyFingerprint, agentId, model);
 }
