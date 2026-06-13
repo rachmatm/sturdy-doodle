@@ -26,9 +26,10 @@ any saved logo, tweak the prompt, and re-generate without starting over.
 ### 1. Prerequisites
 
 - **Node.js 20.9+** (tested on 24) and npm. Check with `node -v`.
-- A **Mistral API key** — free to create at <https://console.mistral.ai/>.
-  This is the only external dependency; image generation runs through Mistral's
-  Agents API.
+- An **image-provider API key** — the simplest is a free **Mistral** key from
+  <https://console.mistral.ai/> (image generation runs through Mistral's Agents
+  API). **Pixazo** (FLUX.1 Schnell) is supported as an alternative or fallback;
+  see the env table below.
 
 ### 2. Clone & install
 
@@ -52,13 +53,26 @@ Then open `.env.local` and set your key:
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `MISTRAL_API_KEY` | **Yes** | Server-side AI key. Get one at <https://console.mistral.ai/>. |
-| `MISTRAL_AGENT_ID` | No | Reuse a pre-created image-generation agent. Leave blank to auto-create one on first use. |
+| `MISTRAL_API_KEY` | **Yes**¹ | Server-side AI key. Get one at <https://console.mistral.ai/>. |
+| `MISTRAL_AGENT_ID` | No | Pin a specific image-generation agent. Leave blank to auto-manage: the app creates one on first use, persists its id, and reuses it across restarts (re-creating only if it was deleted upstream). |
 | `STORAGE_DIR` | No | Where image bytes are written (local filesystem backend). Defaults to `./storage/uploads`. |
 | `DATABASE_PATH` | No | SQLite file for saved logos (local SQLite backend). Defaults to `./storage/gallery.db`. |
 
-Only `MISTRAL_API_KEY` is needed to run locally. `.env.local` is gitignored —
-never commit it.
+¹ At least one provider key is required. `MISTRAL_API_KEY` is the simplest;
+alternatively configure Pixazo (below) and set `IMAGE_PROVIDER=pixazo`.
+`.env.local` is gitignored — never commit it.
+
+**Image provider & fallback (optional).** The AI service can try multiple
+providers and keys per logo, returning the first success — so a rate-limited
+free-tier key (429) rolls over to the next. Leave these unset to use
+`MISTRAL_API_KEY` alone.
+
+| Variable | Description |
+| --- | --- |
+| `IMAGE_PROVIDER` | Ordered, comma-separated providers to try per logo, e.g. `pixazo,mistral`. Defaults to `mistral`. |
+| `MISTRAL_API_KEYS` | Extra Mistral keys (comma-separated), tried after `MISTRAL_API_KEY`. |
+| `PIXAZO_API_KEY` | Pixazo FLUX.1 Schnell key (server-side only). Get one at <https://pixazo.ai/>. |
+| `PIXAZO_API_KEYS` | Extra Pixazo keys (comma-separated), tried after `PIXAZO_API_KEY`. |
 
 **Storage backend (auto-selected at runtime).** Leave the variables below unset
 to use the local filesystem + SQLite defaults above. Set a pair to switch that

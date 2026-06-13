@@ -258,6 +258,19 @@ security all pass; only deploy and the two quota/load-gated checks remain.
 ### Milestone: fallback logic now has a deterministic regression net — re-verifying
 the multi-key rollover is `npm test` (free, no quota) instead of a manual QA pass.
 
+- **Persist + reuse the Mistral agent across restarts** ✅ 2026-06-13
+  `ensureAgent` no longer creates a throwaway agent per process. New flow: env
+  `MISTRAL_AGENT_ID` → in-memory cache → **DB-persisted id verified live via
+  `GET /v1/agents`** → create + persist. Added a `mistral_agents` table +
+  `getStoredAgentId`/`saveAgentId` to `db.ts` (both Turso + SQLite backends),
+  keyed by a SHA-256 fingerprint of the API key so the secret never lands in the
+  DB. DB I/O is best-effort (logged, non-fatal) and a *failed* existence check
+  reuses the stored id rather than spawning a duplicate, so an agent-store hiccup
+  can't break generation. 4 new `ai.test.ts` cases (reuse / create+persist /
+  recreate-when-gone / env-override-skips-store) → 13 tests total. lint + tsc +
+  build + `npm test` clean. **Not exercised against a live key** (no key in env);
+  the live reuse path is covered by mocked-fetch tests, not a real API round-trip.
+
 ## Blockers
 
 None

@@ -12,6 +12,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateImage, isConfigured, MISTRAL_MODEL, PIXAZO_MODEL } from './ai';
 import { ApiException } from './http';
+import { getStoredAgentId, saveAgentId } from './db';
+
+// Stub the persistence layer so agent-resolution tests never touch a real DB.
+vi.mock('./db', () => ({
+  getStoredAgentId: vi.fn(async () => null),
+  saveAgentId: vi.fn(async () => {}),
+}));
+const mockGetStoredAgentId = vi.mocked(getStoredAgentId);
+const mockSaveAgentId = vi.mocked(saveAgentId);
 
 const ENV_KEYS = [
   'IMAGE_PROVIDER',
@@ -83,8 +92,41 @@ async function catchErr(p: Promise<unknown>): Promise<unknown> {
   }
 }
 
+/**
+ * A mocked `fetch` for the Mistral agent lifecycle: the list-agents endpoint
+ * returns `listIds`, agent creation returns `createId`, and conversation +
+ * file-download succeed. Records how many times each endpoint was hit.
+ */
+function buildMistralAgentFetch({
+  listIds = [] as string[],
+  createId = 'agent-new',
+} = {}) {
+  const calls = { listed: 0, created: 0 };
+  const fn = vi.fn(async (url: string | URL, init: RequestInit = {}) => {
+    const u = String(url);
+    const method = (init.method ?? 'GET').toUpperCase();
+
+    if (u.includes('/agents') && method === 'GET') {
+      calls.listed++;
+      return jsonResponse(listIds.map((id) => ({ id })));
+    }
+    if (u.endsWith('/agents') && method === 'POST') {
+      calls.created++;
+      return jsonResponse({ id: createId });
+    }
+    if (u.endsWith('/conversations')) {
+      return jsonResponse({ outputs: [{ content: [{ file_id: 'file-1' }] }] });
+    }
+    if (u.includes('/files/')) return new Response(IMG_BYTES, { status: 200 });
+    throw new Error(`unexpected fetch: ${method} ${u}`);
+  });
+  return { fn, calls };
+}
+
 beforeEach(() => {
   for (const k of ENV_KEYS) delete process.env[k];
+  mockGetStoredAgentId.mockReset().mockResolvedValue(null);
+  mockSaveAgentId.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -197,5 +239,82 @@ describe('generateImage fallback', () => {
     expect(err).toBeInstanceOf(ApiException);
     expect((err as ApiException).code).toBe('INTERNAL');
     expect(fn).not.toHaveBeenCalled();
+  });
+});
+
+// Each test uses a distinct Mistral key so the module-level per-key agent cache
+// (which persists for the test file's lifetime) never leaks between cases.
+describe('mistral agent resolution', () => {
+  it('reuses a DB-stored agent that still exists upstream (no creation)', async () => {
+    process.env.IMAGE_PROVIDER = 'mistral';
+    process.env.MISTRAL_API_KEY = 'm-reuse';
+    mockGetStoredAgentId.mockResolvedValue('agent-stored');
+    const { fn, calls } = buildMistralAgentFetch({ listIds: ['other', 'agent-stored'] });
+    vi.stubGlobal('fetch', fn);
+
+    const img = await generateImage('brief');
+
+    expect(img.model).toBe(MISTRAL_MODEL);
+    expect(calls.listed).toBe(1); // verified via list-agents
+    expect(calls.created).toBe(0); // existing agent reused
+    expect(mockSaveAgentId).not.toHaveBeenCalled();
+  });
+
+  it('creates and persists an agent when none is stored', async () => {
+    process.env.IMAGE_PROVIDER = 'mistral';
+    process.env.MISTRAL_API_KEY = 'm-create';
+    mockGetStoredAgentId.mockResolvedValue(null);
+    const { fn, calls } = buildMistralAgentFetch({ createId: 'agent-fresh' });
+    vi.stubGlobal('fetch', fn);
+
+    const img = await generateImage('brief');
+
+    expect(img.model).toBe(MISTRAL_MODEL);
+    expect(calls.listed).toBe(0); // nothing stored, so no verification
+    expect(calls.created).toBe(1);
+    expect(mockSaveAgentId).toHaveBeenCalledWith(
+      expect.any(String),
+      'agent-fresh',
+      MISTRAL_MODEL,
+    );
+  });
+
+  it('recreates and re-persists when the stored agent is gone upstream', async () => {
+    process.env.IMAGE_PROVIDER = 'mistral';
+    process.env.MISTRAL_API_KEY = 'm-gone';
+    mockGetStoredAgentId.mockResolvedValue('agent-deleted');
+    // list returns only an unrelated agent → stored id verified absent.
+    const { fn, calls } = buildMistralAgentFetch({
+      listIds: ['someone-else'],
+      createId: 'agent-replacement',
+    });
+    vi.stubGlobal('fetch', fn);
+
+    const img = await generateImage('brief');
+
+    expect(img.model).toBe(MISTRAL_MODEL);
+    expect(calls.listed).toBe(1);
+    expect(calls.created).toBe(1);
+    expect(mockSaveAgentId).toHaveBeenCalledWith(
+      expect.any(String),
+      'agent-replacement',
+      MISTRAL_MODEL,
+    );
+  });
+
+  it('never reads the agent store when MISTRAL_AGENT_ID is set (explicit override)', async () => {
+    process.env.IMAGE_PROVIDER = 'mistral';
+    process.env.MISTRAL_API_KEY = 'm-env';
+    process.env.MISTRAL_AGENT_ID = 'agent-from-env';
+    const { fn, calls } = buildMistralAgentFetch();
+    vi.stubGlobal('fetch', fn);
+
+    const img = await generateImage('brief');
+
+    expect(img.model).toBe(MISTRAL_MODEL);
+    expect(mockGetStoredAgentId).not.toHaveBeenCalled();
+    expect(mockSaveAgentId).not.toHaveBeenCalled();
+    expect(calls.listed).toBe(0);
+    expect(calls.created).toBe(0);
   });
 });

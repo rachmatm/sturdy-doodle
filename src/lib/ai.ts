@@ -8,8 +8,11 @@
  *   - **mistral** — Mistral has no plain image endpoint, so generation runs
  *     through the Agents API with the `image_generation` tool (FLUX1.1 [pro]
  *     Ultra under the hood, agent model `mistral-medium-latest`): ensure an
- *     agent (created once per key and cached, or reused via `MISTRAL_AGENT_ID`),
- *     POST a conversation, then download the `file_id` bytes.
+ *     agent, POST a conversation, then download the `file_id` bytes. Agent
+ *     resolution (see {@link ensureAgent}) reuses, in order: `MISTRAL_AGENT_ID`
+ *     if set, else a per-process in-memory cache, else an id persisted in the DB
+ *     from a prior run (verified to still exist via the list-agents endpoint),
+ *     and only creates+persists a new agent when none of those yields a live one.
  *   - **pixazo** — FLUX.1 Schnell via the pixazo gateway: a single synchronous
  *     POST returns `{ output: <url> }`; we fetch the bytes from that URL.
  *
@@ -24,7 +27,9 @@
  * component.
  */
 
+import { createHash } from 'node:crypto';
 import { ApiException } from './http';
+import { getStoredAgentId, saveAgentId } from './db';
 
 const MISTRAL_BASE = 'https://api.mistral.ai/v1';
 const PIXAZO_SCHNELL_URL = 'https://gateway.pixazo.ai/flux-1-schnell/v1/getData';
@@ -118,9 +123,53 @@ export interface GeneratedImage {
   model: string;
 }
 
-// --- Mistral: agent lifecycle (created once per key, cached, deduped) ---
+// --- Mistral: agent lifecycle (env override → memory cache → DB → create) ---
 
 const agentByKey = new Map<string, Promise<string>>();
+
+/**
+ * Opaque, stable identifier for an API key — its SHA-256 hex digest. Used to
+ * address the key's persisted agent id without ever writing the secret to the DB.
+ */
+function fingerprintKey(key: string): string {
+  return createHash('sha256').update(key).digest('hex');
+}
+
+/**
+ * Whether `agentId` still exists on the account behind `key`, via the list-agents
+ * endpoint (`GET /v1/agents`, paginated). Throws on an unreadable/non-OK
+ * response so callers can distinguish "verified absent" (false) from "couldn't
+ * check" (throw) and avoid spawning duplicate agents on a transient error.
+ */
+async function agentExists(
+  key: string,
+  agentId: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const pageSize = 100;
+  for (let page = 0; page < 20; page++) {
+    const res = await timedFetch(
+      `${MISTRAL_BASE}/agents?page=${page}&page_size=${pageSize}`,
+      { method: 'GET', headers: { Authorization: `Bearer ${key}` } },
+      timeoutMs,
+    );
+    if (!res.ok) {
+      console.error('[ai] list agents failed', res.status, await readErrorBody(res));
+      throw new ApiException('UPSTREAM_ERROR', {
+        message: `agent list failed (${res.status})`,
+      });
+    }
+    const data: unknown = await res.json().catch(() => null);
+    const agents = Array.isArray(data)
+      ? data
+      : Array.isArray((data as { data?: unknown[] })?.data)
+        ? (data as { data: unknown[] }).data
+        : [];
+    if (agents.some((a) => (a as { id?: unknown })?.id === agentId)) return true;
+    if (agents.length < pageSize) break; // last page reached
+  }
+  return false;
+}
 
 async function createAgent(key: string, timeoutMs: number): Promise<string> {
   const res = await timedFetch(
@@ -154,14 +203,45 @@ async function createAgent(key: string, timeoutMs: number): Promise<string> {
   return data.id;
 }
 
-/** Resolve the agent id for a key: env override, else create-and-cache once. */
+/**
+ * Resolve an agent id for `key`, reusing an existing one wherever possible:
+ *   1. a recorded id in the DB whose agent still exists upstream, else
+ *   2. a freshly created agent, which is then persisted for future runs.
+ * A DB read/write hiccup is non-fatal (logged); a *failed* existence check
+ * reuses the recorded id rather than creating a duplicate agent.
+ */
+async function resolveAgent(key: string, timeoutMs: number): Promise<string> {
+  const fingerprint = fingerprintKey(key);
+
+  const stored = await getStoredAgentId(fingerprint).catch((err) => {
+    console.error('[ai] could not read stored agent id', err);
+    return null;
+  });
+  if (stored) {
+    try {
+      if (await agentExists(key, stored, timeoutMs)) return stored;
+    } catch (err) {
+      // Couldn't verify (transient/rate-limit) — reuse rather than duplicate.
+      console.warn('[ai] could not verify stored agent; reusing', err);
+      return stored;
+    }
+  }
+
+  const created = await createAgent(key, timeoutMs);
+  await saveAgentId(fingerprint, created, MISTRAL_MODEL).catch((err) =>
+    console.error('[ai] failed to persist agent id', err),
+  );
+  return created;
+}
+
+/** Resolve the agent id for a key: env override, else memoized {@link resolveAgent}. */
 async function ensureAgent(key: string, timeoutMs: number): Promise<string> {
   const fromEnv = process.env.MISTRAL_AGENT_ID?.trim();
   if (fromEnv) return fromEnv;
 
   let promise = agentByKey.get(key);
   if (!promise) {
-    promise = createAgent(key, timeoutMs).catch((err) => {
+    promise = resolveAgent(key, timeoutMs).catch((err) => {
       agentByKey.delete(key); // allow retry on next call
       throw err;
     });
