@@ -24,6 +24,7 @@ const mockSaveAgentId = vi.mocked(saveAgentId);
 
 const ENV_KEYS = [
   'IMAGE_PROVIDER',
+  'IMAGE_KEY_STRATEGY',
   'MISTRAL_API_KEY',
   'MISTRAL_API_KEYS',
   'PIXAZO_API_KEY',
@@ -239,6 +240,91 @@ describe('generateImage fallback', () => {
     expect(err).toBeInstanceOf(ApiException);
     expect((err as ApiException).code).toBe('INTERNAL');
     expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('defaults to fallback: every call starts at the first key (no rotation)', async () => {
+    // No IMAGE_KEY_STRATEGY → strict priority. Both keys succeed, so each call
+    // short-circuits at p1; across 3 calls p2 is never reached.
+    process.env.IMAGE_PROVIDER = 'pixazo';
+    process.env.PIXAZO_API_KEY = 'p1';
+    process.env.PIXAZO_API_KEYS = 'p2';
+    const { fn, generateKeys } = buildFetch({ goodPixazo: new Set(['p1', 'p2']) });
+    vi.stubGlobal('fetch', fn);
+
+    await generateImage('a');
+    await generateImage('b');
+    await generateImage('c');
+
+    expect(generateKeys).toEqual(['p1', 'p1', 'p1']);
+  });
+});
+
+// Round-robin rotates the starting provider+key per request. The rotation
+// counter is module-level (persists across tests), so these assert *relative*
+// patterns (alternation / set coverage), never an absolute "call 1 starts at X".
+describe('round-robin key strategy', () => {
+  it('alternates the starting provider across successive requests', async () => {
+    process.env.IMAGE_PROVIDER = 'mistral,pixazo';
+    process.env.IMAGE_KEY_STRATEGY = 'round-robin';
+    process.env.MISTRAL_API_KEY = 'm1';
+    process.env.PIXAZO_API_KEY = 'p1';
+    process.env.MISTRAL_AGENT_ID = 'agent-x'; // skip live agent creation
+    const { fn } = buildFetch({
+      goodMistral: new Set(['m1']),
+      goodPixazo: new Set(['p1']),
+    });
+    vi.stubGlobal('fetch', fn);
+
+    const models = [
+      (await generateImage('a')).model,
+      (await generateImage('b')).model,
+      (await generateImage('c')).model,
+      (await generateImage('d')).model,
+    ];
+
+    // Both providers are exercised and consecutive calls differ (A,B,A,B).
+    expect(new Set(models)).toEqual(new Set([MISTRAL_MODEL, PIXAZO_MODEL]));
+    expect(models[0]).not.toBe(models[1]);
+    expect(models[1]).not.toBe(models[2]);
+    expect(models[2]).not.toBe(models[3]);
+  });
+
+  it('still rolls over within a request when the starting provider fails', async () => {
+    // Only mistral succeeds; whether a call starts on pixazo or mistral, it must
+    // roll over and return a mistral image — full fallback is preserved.
+    process.env.IMAGE_PROVIDER = 'mistral,pixazo';
+    process.env.IMAGE_KEY_STRATEGY = 'round-robin';
+    process.env.MISTRAL_API_KEY = 'm1';
+    process.env.PIXAZO_API_KEY = 'p1';
+    process.env.MISTRAL_AGENT_ID = 'agent-x';
+    const { fn } = buildFetch({ goodMistral: new Set(['m1']) }); // pixazo 429s
+    vi.stubGlobal('fetch', fn);
+
+    const first = await generateImage('a');
+    const second = await generateImage('b'); // different rotation offset
+
+    expect(first.model).toBe(MISTRAL_MODEL);
+    expect(second.model).toBe(MISTRAL_MODEL);
+  });
+
+  it('visits every provider×key exactly once before failing', async () => {
+    // 2 providers × 2 keys, all rate-limited. Regardless of the rotation offset,
+    // the rollover must cover the whole chain (each key tried once) then throw.
+    process.env.IMAGE_PROVIDER = 'mistral,pixazo';
+    process.env.IMAGE_KEY_STRATEGY = 'round-robin';
+    process.env.MISTRAL_API_KEY = 'm1';
+    process.env.MISTRAL_API_KEYS = 'm2';
+    process.env.PIXAZO_API_KEY = 'p1';
+    process.env.PIXAZO_API_KEYS = 'p2';
+    process.env.MISTRAL_AGENT_ID = 'agent-x';
+    const { fn, generateKeys } = buildFetch(); // every key 429s
+    vi.stubGlobal('fetch', fn);
+
+    const err = await catchErr(generateImage('brief'));
+
+    expect(err).toBeInstanceOf(ApiException);
+    expect(generateKeys).toHaveLength(4);
+    expect(new Set(generateKeys)).toEqual(new Set(['m1', 'm2', 'p1', 'p2']));
   });
 });
 

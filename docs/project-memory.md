@@ -45,6 +45,12 @@ Single Next.js 16 fullstack app. Wizard (React 19) → same-origin API routes �
   keys for a provider NOT in that ordered list are ignored (incl. by
   `isConfigured()`). A pixazo-only deploy must set `IMAGE_PROVIDER=pixazo`. The
   live config uses `IMAGE_PROVIDER=pixazo,mistral` with 2 keys per pool.
+- **Key strategy:** `IMAGE_KEY_STRATEGY` (default `fallback` = strict priority)
+  can be set to `round-robin` to left-rotate the starting provider+key per
+  request (per-process counter) so a generate burst spreads across keys instead
+  of draining the first one. Opt-in; rollover is unchanged in both modes (every
+  provider×key still tried before failing). Per-process state only — not shared
+  across instances.
 - **Mistral agent reuse:** the auto-created agent id is persisted in the DB
   (`mistral_agents` table, keyed by a SHA-256 fingerprint of the key — never the
   key itself) and reused across restarts, verified each process-start via
