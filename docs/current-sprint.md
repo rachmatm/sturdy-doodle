@@ -271,6 +271,22 @@ the multi-key rollover is `npm test` (free, no quota) instead of a manual QA pas
   build + `npm test` clean. **Not exercised against a live key** (no key in env);
   the live reuse path is covered by mocked-fetch tests, not a real API round-trip.
 
+- **Round-robin image API key strategy (opt-in)** ✅ 2026-06-13
+  New `IMAGE_KEY_STRATEGY` env (`fallback` default | `round-robin`) in `ai.ts`.
+  `fallback` keeps today's strict-priority chain; `round-robin` left-rotates the
+  provider order **and** each provider's key pool by a per-process counter
+  advanced once per request, so the ~12 concurrent calls from `POST /api/generate`
+  spread across providers/keys (`mistral,pixazo` ×2 keys → m1,m2,p1,p2 then
+  p2,p1,m2,m1 then back) instead of all hammering the first free-tier key.
+  Rollover is unchanged — every provider×key is still tried before failing; only
+  the starting point rotates, and a single-key/single-provider deploy is a no-op.
+  Pure + encapsulated in `ai.ts` (routes/UI untouched). 4 new `ai.test.ts` cases
+  (alternating starting provider, in-request rollover from a failing start,
+  full-chain coverage on all-fail, fallback-default unchanged) → 17 tests total.
+  lint + tsc + build + `npm test` clean. **Not exercised against a live key** (no
+  key in env); rotation/rollover is covered by mocked-fetch tests, not a real
+  multi-key burst.
+
 ## Blockers
 
 None

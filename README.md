@@ -73,6 +73,7 @@ free-tier key (429) rolls over to the next. Leave these unset to use
 | `MISTRAL_API_KEYS` | Extra Mistral keys (comma-separated), tried after `MISTRAL_API_KEY`. |
 | `PIXAZO_API_KEY` | Pixazo FLUX.1 Schnell key (server-side only). Get one at <https://pixazo.ai/>. |
 | `PIXAZO_API_KEYS` | Extra Pixazo keys (comma-separated), tried after `PIXAZO_API_KEY`. |
+| `IMAGE_KEY_STRATEGY` | `fallback` (default, strict priority) or `round-robin` to rotate the starting provider+key per request, spreading a generate burst across keys. Rollover is preserved either way. |
 
 **Storage backend (auto-selected at runtime).** Leave the variables below unset
 to use the local filesystem + SQLite defaults above. Set a pair to switch that

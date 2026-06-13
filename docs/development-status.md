@@ -16,7 +16,7 @@ _Last updated: 2026-06-13_
 | API routes | ✅ Complete (6 of 6) |
 | Frontend (wizard + gallery) | ✅ Complete (in-browser QA passed 2026-06-12) |
 | QA (security, validation, UI loop) | ✅ Passed in-browser 2026-06-12; ⬜ concurrency-under-load left |
-| Automated tests | ✅ `src/lib/ai.test.ts` — provider×key fallback + agent reuse/persistence (13 tests, vitest, `npm test`) |
+| Automated tests | ✅ `src/lib/ai.test.ts` — provider×key fallback + round-robin rotation + agent reuse/persistence (17 tests, vitest, `npm test`) |
 | Deploy / live URL | ⬜ Not started |
 
 Overall: **backend complete (all 6 routes); frontend complete and verified in a
@@ -37,7 +37,7 @@ simultaneous load.**
 - `http.ts` + `errorCopy.ts` — uniform `{ error, code }` responses + user copy.
 - `db.ts` — SQLite (WAL + busy_timeout) / Turso, `gallery` table + index and a `mistral_agents` table (persisted agent ids keyed by a key fingerprint, for cross-restart agent reuse), prepared statements.
 - `storage.ts` — atomic image writes, UUID names, magic-byte typing, path-traversal guard.
-- `ai.ts` — multi-provider image service behind one `generateImage()`: **mistral** (Agents API) and **pixazo** (FLUX.1 Schnell, sync `{output:url}`). `IMAGE_PROVIDER` is an ordered list; each provider has a key pool (`*_API_KEY` + `*_API_KEYS`); `generateImage()` walks provider×key in order, returning the first success so a free-tier `429` rolls over. Mistral agent resolution (`ensureAgent`): env `MISTRAL_AGENT_ID` → per-process cache → **DB-persisted id verified live via `GET /v1/agents`** → create + persist (`db.getStoredAgentId`/`saveAgentId`, `mistral_agents` table keyed by a SHA-256 key fingerprint), so a process restart reuses one agent instead of creating duplicates; DB I/O is best-effort. Timeouts → `TIMEOUT`/`NO_IMAGE`/`UPSTREAM_ERROR`; `isConfigured()`.
+- `ai.ts` — multi-provider image service behind one `generateImage()`: **mistral** (Agents API) and **pixazo** (FLUX.1 Schnell, sync `{output:url}`). `IMAGE_PROVIDER` is an ordered list; each provider has a key pool (`*_API_KEY` + `*_API_KEYS`); `generateImage()` walks provider×key in order, returning the first success so a free-tier `429` rolls over. `IMAGE_KEY_STRATEGY` selects the per-request ordering: `fallback` (default, strict priority) or `round-robin`, which advances the starting provider **and** key per request (per-process counter) so a fan-out burst spreads across providers/keys instead of hammering one key — full rollover preserved either way. Mistral agent resolution (`ensureAgent`): env `MISTRAL_AGENT_ID` → per-process cache → **DB-persisted id verified live via `GET /v1/agents`** → create + persist (`db.getStoredAgentId`/`saveAgentId`, `mistral_agents` table keyed by a SHA-256 key fingerprint), so a process restart reuses one agent instead of creating duplicates; DB I/O is best-effort. Timeouts → `TIMEOUT`/`NO_IMAGE`/`UPSTREAM_ERROR`; `isConfigured()`.
 - `prompt.ts` — brief validation + brief→prompt construction + refine prompt.
 - `apiClient.ts` — client-safe fetch helper (`ClientApiError` + `requestJson`) preserving the `{error,code}` contract so the UI can branch on the failure code.
 

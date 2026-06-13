@@ -23,6 +23,15 @@
  * All failures surface as typed {@link ApiException}s (`TIMEOUT` / `NO_IMAGE` /
  * `UPSTREAM_ERROR`) that routes map to retryable error states.
  *
+ * `IMAGE_KEY_STRATEGY` selects how the chain is *ordered* per request:
+ *   - `fallback` (default) — always start at the first provider/key (strict
+ *     priority), rolling over only on failure.
+ *   - `round-robin` — advance the starting provider **and** the starting key
+ *     within each pool by a per-request counter, so a fan-out burst (e.g. the 12
+ *     concurrent calls from `POST /api/generate`) spreads across providers/keys
+ *     instead of hammering one free-tier key. Full rollover is preserved — every
+ *     key/provider is still tried before failing; only the starting point rotates.
+ *
  * Server-only: reads provider API keys and must never be imported by a client
  * component.
  */
@@ -53,6 +62,29 @@ function dedupe(items: string[]): string[] {
   return [...new Set(items)];
 }
 
+/** Left-rotate a list by `by` positions (negative-safe); a 0/1-length list is unchanged. */
+function rotate<T>(items: T[], by: number): T[] {
+  const len = items.length;
+  if (len <= 1) return items;
+  const k = ((by % len) + len) % len;
+  return k === 0 ? items : [...items.slice(k), ...items.slice(0, k)];
+}
+
+type KeyStrategy = 'fallback' | 'round-robin';
+
+/** Selection strategy from `IMAGE_KEY_STRATEGY` (default `fallback`). */
+function keyStrategy(): KeyStrategy {
+  return process.env.IMAGE_KEY_STRATEGY?.trim().toLowerCase() === 'round-robin'
+    ? 'round-robin'
+    : 'fallback';
+}
+
+/**
+ * Per-process counter advanced once per round-robin request, so the concurrent
+ * fan-out calls each take a distinct rotation offset. Unused in `fallback` mode.
+ */
+let rotationCounter = 0;
+
 /** Keys for a provider: the single-key var first, then the list var, de-duped. */
 function keysFor(provider: Provider): string[] {
   if (provider === 'mistral') {
@@ -76,11 +108,16 @@ function providerOrder(): Provider[] {
   return order.length ? order : ['mistral'];
 }
 
-/** All (provider, key) attempts in fallback order. */
-function attemptChain(): { provider: Provider; key: string }[] {
+/**
+ * All (provider, key) attempts in fallback order, rotated by `offset`: the
+ * provider order and each provider's key pool are left-rotated by `offset`, so
+ * `offset = 0` is the strict-priority chain and a per-request offset spreads the
+ * starting point (round-robin) while still covering every provider×key.
+ */
+function attemptChain(offset = 0): { provider: Provider; key: string }[] {
   const chain: { provider: Provider; key: string }[] = [];
-  for (const provider of providerOrder()) {
-    for (const key of keysFor(provider)) chain.push({ provider, key });
+  for (const provider of rotate(providerOrder(), offset)) {
+    for (const key of rotate(keysFor(provider), offset)) chain.push({ provider, key });
   }
   return chain;
 }
@@ -384,7 +421,9 @@ function generateWith(
 
 /**
  * Generate a single logo image from a fully-constructed prompt, trying each
- * configured provider/key in {@link providerOrder} order until one succeeds.
+ * configured provider/key until one succeeds. The chain order follows
+ * {@link providerOrder}: strict priority under `fallback`, or rotated per request
+ * under `round-robin` (see {@link keyStrategy}).
  *
  * @throws {ApiException} INTERNAL (no provider configured), or the last
  *   provider failure (TIMEOUT / NO_IMAGE / UPSTREAM_ERROR) once every fallback
@@ -395,7 +434,9 @@ export async function generateImage(
   opts: { timeoutMs?: number } = {},
 ): Promise<GeneratedImage> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const chain = attemptChain();
+  // Take the offset synchronously so concurrent fan-out calls get distinct rotations.
+  const offset = keyStrategy() === 'round-robin' ? rotationCounter++ : 0;
+  const chain = attemptChain(offset);
   if (chain.length === 0) {
     throw new ApiException('INTERNAL', { message: 'no image provider configured' });
   }
