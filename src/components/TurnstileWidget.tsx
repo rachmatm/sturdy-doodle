@@ -27,7 +27,7 @@ interface TurnstileApi {
   render: (
     el: HTMLElement,
     opts: {
-      sitekey: string;
+      sitekey: string | undefined;
       callback: (token: string) => void;
       'expired-callback'?: () => void;
       'error-callback'?: () => void;
