@@ -1,31 +1,42 @@
 /**
- * Image bytes on the local filesystem (architecture.md §7, §8).
+ * Image bytes storage (architecture.md §7, §8).
  *
- * Bytes are written under `STORAGE_DIR` (outside `public/`) and served only via
- * `/api/images/[filename]`. Guarantees:
+ * Two interchangeable backends, selected at runtime from the environment:
+ *  - **Vercel Blob** (`@vercel/blob`) when `BLOB_STORE_ID` and
+ *    `BLOB_READ_WRITE_TOKEN` are both set — used on hosts without a writable
+ *    disk (e.g. Vercel). Bytes live on Blob's public CDN; the stored "filename"
+ *    is the absolute CDN URL, which the gallery loads directly and `readImage`
+ *    fetches back for download.
+ *  - **Filesystem** otherwise — bytes written atomically under `STORAGE_DIR`
+ *    (outside `public/`), served via `/api/images/[filename]`.
+ *
+ * Both expose the same async API. Guarantees preserved across backends:
  *  - **Unique IDs** — UUID filename stems, so concurrent generations never
  *    clobber each other.
- *  - **Atomic writes** — temp file + rename on the same directory, so a reader
- *    never observes a half-written image.
- *  - **Magic-byte typing** — the stored extension/content type comes from the
+ *  - **Magic-byte typing** — the stored content type/extension comes from the
  *    bytes, not a caller-supplied value.
- *  - **Path-traversal guard** — reads validate the filename and resolve it
- *    inside the storage root, rejecting anything that escapes (TC-SEC-002).
+ *  - **Atomic writes** (filesystem) — temp file + rename, so a reader never sees
+ *    a half-written image. Blob writes are atomic by nature (the URL only
+ *    resolves once the upload completes).
+ *  - **Path-traversal guard** (filesystem reads) — the filename must match the
+ *    safe pattern and resolve inside the storage root (TC-SEC-002).
  *
- * Server-only: uses `node:fs` and must not be imported by a client component.
+ * Server-only: uses `node:fs` / the Blob write token and must not be imported by
+ * a client component. Backends are dynamically imported so only the one in use
+ * is loaded.
  */
 
 import { randomUUID } from 'node:crypto';
-import {
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const DEFAULT_STORAGE_DIR = join(process.cwd(), 'storage', 'uploads');
+
+/** True when the Vercel Blob credentials are present and Blob should be used. */
+function blobEnabled(): boolean {
+  return Boolean(
+    process.env.BLOB_STORE_ID?.trim() && process.env.BLOB_READ_WRITE_TOKEN?.trim(),
+  );
+}
 
 /** Absolute, normalized storage root from env (default ./storage/uploads). */
 function storageRoot(): string {
@@ -95,11 +106,17 @@ function detectImageType(bytes: Uint8Array): ImageType | null {
 export interface StoredImage {
   /** UUID stem, also used as the gallery record id. */
   id: string;
-  /** `<uuid>.<ext>` on disk. */
+  /**
+   * What to persist as the record's `imageFilename`. Filesystem: `<uuid>.<ext>`.
+   * Blob: the absolute CDN URL (self-describing, used directly for download).
+   */
   filename: string;
   /** Detected from magic bytes. */
   contentType: string;
-  /** Public path to fetch the bytes. */
+  /**
+   * Public path/URL to fetch the bytes. Filesystem: `/api/images/<file>`.
+   * Blob: the absolute CDN URL (loaded directly by the gallery).
+   */
   url: string;
 }
 
@@ -118,20 +135,43 @@ export class InvalidFilenameError extends Error {
 }
 
 /**
- * Persist image bytes atomically. The content type and extension are derived
- * from the bytes; a caller-supplied id may seed the filename stem (so the
- * gallery row id and the file agree), otherwise a fresh UUID is used.
+ * Persist image bytes. The content type and extension are derived from the
+ * bytes; a caller-supplied id seeds the filename stem (so the gallery row id and
+ * the file agree), otherwise a fresh UUID is used.
  *
  * @throws {UnsupportedImageError} when the bytes aren't a recognized image.
  */
-export function saveImage(bytes: Uint8Array, id: string = randomUUID()): StoredImage {
+export async function saveImage(
+  bytes: Uint8Array,
+  id: string = randomUUID(),
+): Promise<StoredImage> {
   const type = detectImageType(bytes);
   if (!type) throw new UnsupportedImageError();
 
+  const filename = `${id}.${type.ext}`;
+
+  if (blobEnabled()) {
+    const { put } = await import('@vercel/blob');
+    const result = await put(filename, Buffer.from(bytes), {
+      access: 'public',
+      addRandomSuffix: false,
+      contentType: type.contentType,
+      token: process.env.BLOB_READ_WRITE_TOKEN!.trim(),
+    });
+    // The CDN URL is self-describing: it doubles as the record's filename so
+    // download can fetch the bytes back, and as the public URL the gallery loads.
+    return {
+      id,
+      filename: result.url,
+      contentType: type.contentType,
+      url: result.url,
+    };
+  }
+
+  const { mkdirSync, writeFileSync, renameSync, rmSync } = await import('node:fs');
   const root = storageRoot();
   mkdirSync(root, { recursive: true });
 
-  const filename = `${id}.${type.ext}`;
   const finalPath = join(root, filename);
   // Temp file in the same directory so rename is atomic on one filesystem.
   const tempPath = join(root, `.${id}.${randomUUID()}.tmp`);
@@ -153,15 +193,37 @@ export function saveImage(bytes: Uint8Array, id: string = randomUUID()): StoredI
 }
 
 /**
- * Read stored image bytes by filename, guarding against path traversal: the
- * filename must match the safe pattern and resolve to a path inside the storage
- * root. Returns null when the file is absent.
+ * Read stored image bytes back. The argument is the record's `imageFilename`:
+ *  - An absolute `http(s)` URL (Blob mode) is fetched from the CDN.
+ *  - A bare `<uuid>.<ext>` (filesystem mode) is read from disk, guarded against
+ *    path traversal: it must match the safe pattern and resolve inside the
+ *    storage root.
  *
- * @throws {InvalidFilenameError} when the filename is malformed or escapes root.
+ * Returns null when the image is absent.
+ *
+ * @throws {InvalidFilenameError} when a filesystem filename is malformed or
+ *   escapes the storage root.
  */
-export function readImage(
+export async function readImage(
   filename: string,
-): { bytes: Buffer; contentType: string } | null {
+): Promise<{ bytes: Buffer; contentType: string } | null> {
+  if (/^https?:\/\//i.test(filename)) {
+    const res = await fetch(filename);
+    if (res.status === 404) return null;
+    if (!res.ok) {
+      throw new Error(`Blob fetch failed: ${res.status}`);
+    }
+    const bytes = Buffer.from(await res.arrayBuffer());
+    const type = detectImageType(bytes);
+    return {
+      bytes,
+      contentType:
+        type?.contentType ??
+        res.headers.get('content-type') ??
+        'application/octet-stream',
+    };
+  }
+
   if (!SAFE_FILENAME.test(filename)) {
     throw new InvalidFilenameError(filename);
   }
@@ -173,6 +235,7 @@ export function readImage(
     throw new InvalidFilenameError(filename);
   }
 
+  const { readFileSync } = await import('node:fs');
   let bytes: Buffer;
   try {
     bytes = readFileSync(target);

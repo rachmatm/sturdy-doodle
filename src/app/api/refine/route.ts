@@ -73,7 +73,7 @@ async function refineOne(
 ): Promise<LogoConcept> {
   const { bytes, model } = await generateImage(prompt);
   const id = randomUUID();
-  const stored = saveImage(bytes, id);
+  const stored = await saveImage(bytes, id);
   const params: LogoParams = {
     brief,
     directive: refinement.directive,
@@ -90,7 +90,7 @@ async function refineOne(
     createdAt: new Date().toISOString(),
     params,
   };
-  return insertConcept(concept);
+  return await insertConcept(concept);
 }
 
 export async function POST(req: Request) {
@@ -107,7 +107,7 @@ export async function POST(req: Request) {
       return jsonError('INVALID_PROMPT', refinementCheck.message);
     }
 
-    const original = getConcept(conceptId);
+    const original = await getConcept(conceptId);
     if (!original) {
       return jsonError('INVALID_REQUEST', 'That logo is no longer in the gallery.');
     }

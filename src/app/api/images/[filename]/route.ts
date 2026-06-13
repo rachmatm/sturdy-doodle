@@ -8,9 +8,9 @@ export async function GET(
 ) {
   const { filename } = await params;
 
-  let result: ReturnType<typeof readImage>;
+  let result: Awaited<ReturnType<typeof readImage>>;
   try {
-    result = readImage(filename);
+    result = await readImage(filename);
   } catch (err) {
     if (err instanceof InvalidFilenameError) {
       return new Response('Invalid filename', { status: 400 });
