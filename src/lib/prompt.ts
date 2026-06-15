@@ -24,7 +24,7 @@ export const BUSINESS_NAME_MAX = 80;
 export const BUSINESS_DESCRIPTION_MAX = 2000;
 
 /** Number of distinct concepts produced per generation (PRD FR-004). */
-export const CONCEPT_COUNT = 12;
+export const CONCEPT_COUNT = 6;
 
 export interface BriefValidationError {
   field: 'businessName' | 'businessDescription' | 'traits' | 'style';

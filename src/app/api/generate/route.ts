@@ -12,7 +12,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 // Bounded parallelism so we never open 12 upstream calls at once.
-const CONCURRENCY = 4;
+const CONCURRENCY = 3;
 
 async function mapWithConcurrency<T, R>(
   items: T[],

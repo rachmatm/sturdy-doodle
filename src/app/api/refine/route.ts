@@ -23,7 +23,7 @@ export const maxDuration = 60;
 
 // New variations per refinement. Kept at/below the generate route's concurrency
 // bound (4) so the parallel upstream calls stay within the same envelope.
-const REFINE_COUNT = 4;
+const REFINE_COUNT = 3;
 
 interface NormalizedRefinement {
   directive?: RefinementDirective;
